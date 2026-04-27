@@ -24,6 +24,22 @@ A free gift to the software developer community. If Claude Code wrote it, this p
 
 ---
 
+## Disclaimer
+
+**This software is provided "as is", without warranty of any kind, express or implied.**
+
+Code Security Guardian is a best-effort static analysis tool. It is not a substitute for a professional security audit, penetration test, or legal compliance review. The author makes no representations or warranties that this tool will identify all vulnerabilities, prevent security breaches, or make your software secure.
+
+By using this tool, you agree that:
+
+- The author accepts **no responsibility or liability** for any security incidents, data breaches, damages, or losses arising from use of this tool or reliance on its output.
+- Findings are informational only. You are solely responsible for evaluating, validating, and acting on any output.
+- This tool does not guarantee your code is free of security vulnerabilities, even if no findings are reported.
+
+For production systems handling sensitive or regulated data, always engage qualified security professionals.
+
+---
+
 ## What It Is
 
 Code Security Guardian combines a fast, dependency-free regex scanner (`codesec-scan`) with LLM-powered semantic analysis. The scanner does a broad sweep in milliseconds; Claude confirms each finding with code context, filters false positives, and catches the vulnerability classes no regex can touch — IDOR, SSRF, missing auth checks, and business logic flaws.
