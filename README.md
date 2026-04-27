@@ -18,7 +18,7 @@
 
 **A language-agnostic security review plugin for Claude Code.**
 
-Built by [kanz.ai](https://kanz.ai) — reza@kanz.ai
+Built by [Reza Sahebozamani](https://github.com/Rezasz) — sahebzamanii@gmail.com
 
 A free gift to the software developer community. If Claude Code wrote it, this plugin reviews it.
 
@@ -47,7 +47,7 @@ It's not a replacement for a penetration test. It's the thing you run before you
 
 ## License
 
-MIT License — Copyright (c) 2025 kanz.ai (reza@kanz.ai)
+MIT License — Copyright (c) 2025 Reza Sahebozamani (sahebzamanii@gmail.com)
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software and associated documentation files (the "Software"), to deal in the Software without restriction, including without limitation the rights to use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the Software, and to permit persons to whom the Software is furnished to do so, subject to the following conditions:
 
@@ -69,7 +69,7 @@ claude --plugin-dir ./code-security-guardian
 ### From source
 
 ```bash
-git clone https://github.com/kanz-ai/code-security-guardian
+git clone https://github.com/Rezasz/code-security-guardian
 claude --plugin-dir ./code-security-guardian
 ```
 
@@ -370,7 +370,7 @@ For production systems handling sensitive data: supplement with DAST, manual pen
 
 ## Contributing
 
-1. Fork the repo
+1. Fork the repo at https://github.com/Rezasz/code-security-guardian
 2. Add rules to `rules/core/` following the schema in `skills/security-research/references/rule-authoring.md`
 3. Test against a fixture: `bin/codesec-rules test <rule-id> --on ./fixture`
 4. Validate: `bin/codesec-rules validate rules/core/my-new-rules.yaml`
@@ -386,7 +386,7 @@ Rule guidelines:
 
 ## Acknowledgements
 
-Built with love for the developer community by [kanz.ai](https://kanz.ai).
+Built with love for the developer community by [Reza Sahebozamani](https://github.com/Rezasz).
 
 If this saved you from shipping a vulnerability, please star the repo and share it with a friend.
 

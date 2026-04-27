@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 codesec-learn — Feedback ingestion and learning CLI for Code Security Guardian
-Stdlib only, Python 3.8+. Author: kanz.ai <reza@kanz.ai>
+Stdlib only, Python 3.8+. Author: Reza Sahebozamani <sahebzamanii@gmail.com>
 """
 
 import argparse

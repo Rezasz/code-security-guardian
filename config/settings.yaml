@@ -5,7 +5,7 @@ research:
   enabled: true
   # Auto-detect from project context if empty. Example: [react, python, postgres]
   focus: []
-  community_rules_url: "https://raw.githubusercontent.com/kanz-ai/codesec-rules/main/manifest.json"
+  community_rules_url: "https://raw.githubusercontent.com/Rezasz/codesec-rules/main/manifest.json"
   gpg_verify: false
   fetch_timeout_seconds: 30
   max_items_per_source: 50

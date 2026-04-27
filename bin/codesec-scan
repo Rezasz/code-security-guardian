@@ -2,7 +2,7 @@
 """
 codesec-scan — Code Security Guardian scanner
 Regex-based static analysis across all stacks. Stdlib only, Python 3.8+.
-Author: kanz.ai <reza@kanz.ai>
+Author: Reza Sahebozamani <sahebzamanii@gmail.com>
 """
 
 import argparse
