@@ -1,0 +1,30 @@
+{
+  "name": "code-security-guardian",
+  "owner": {
+    "name": "Reza Sahebozamani",
+    "email": "sahebzamanii@gmail.com"
+  },
+  "metadata": {
+    "description": "Language-agnostic security scanning and vulnerability detection for Claude Code",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "code-security-guardian",
+      "source": {
+        "source": "github",
+        "repo": "Rezasz/code-security-guardian"
+      },
+      "description": "SAST, secrets detection, dependency audit, and infrastructure checks across any stack. Catches what regex misses: IDOR, SSRF, missing auth, and business logic flaws. Gets smarter the more you use it.",
+      "author": {
+        "name": "Reza Sahebozamani",
+        "email": "sahebzamanii@gmail.com"
+      },
+      "homepage": "https://github.com/Rezasz/code-security-guardian",
+      "repository": "https://github.com/Rezasz/code-security-guardian",
+      "license": "MIT",
+      "keywords": ["security", "sast", "audit", "secrets", "xss", "sqli", "ssrf", "vibe-coding"],
+      "category": "security"
+    }
+  ]
+}
