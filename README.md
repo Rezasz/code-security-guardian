@@ -87,6 +87,67 @@ That's it. Claude detects your stack, loads the right rules, runs the scanner, c
 
 ---
 
+## How to Use
+
+### 1 — Run a scan
+
+Inside Claude Code, type:
+
+```
+/code-security-guardian:security-scan
+```
+
+Or scan a specific folder with a stack hint for faster detection:
+
+```
+/code-security-guardian:security-scan ./src --stack react,python
+```
+
+### 2 — Review what Claude just wrote (before committing)
+
+```
+/code-security-guardian:security-review-pr
+```
+
+Scans only the current git diff — fast and focused on what changed.
+
+### 3 — Respond to findings
+
+After each scan, Claude walks you through Critical and High findings one by one:
+
+```
+[CRIT-01] Hardcoded JWT secret — src/auth/middleware.ts:14
+Is this a real issue? [accept / dismiss / fix / skip]
+```
+
+Your decisions are logged locally and used to improve the scanner over time.
+
+### 4 — Make it smarter
+
+```
+/code-security-guardian:security-learn
+```
+
+Clusters your past dismissals and proposes narrowing noisy rules or adding suppressions. Run this every few scans.
+
+### 5 — Stay current on CVEs
+
+```
+/code-security-guardian:security-research
+```
+
+Fetches new advisories for your detected stack and drafts new scanner rules. To research a specific CVE:
+
+```
+/code-security-guardian:security-research CVE-2024-1234
+```
+
+### 6 — Optional: inline hook
+
+To get security warnings on every file Claude edits, set `"enabled": true` in `hooks/post-edit-quickscan.json`. It runs silently on clean files and only prints Critical/High findings inline.
+
+---
+
 ## Commands
 
 | Command | What it does |
