@@ -24,7 +24,8 @@
       "repository": "https://github.com/Rezasz/code-security-guardian",
       "license": "MIT",
       "keywords": ["security", "sast", "audit", "secrets", "xss", "sqli", "ssrf", "vibe-coding"],
-      "category": "security"
+      "category": "security",
+      "tags": ["security", "sast", "vulnerability", "secrets", "xss", "sqli", "ssrf", "vibe-coding", "ai-code-review"]
     }
   ]
 }

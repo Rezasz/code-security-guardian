@@ -75,6 +75,19 @@ THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLI
 
 ## Install
 
+### From the marketplace (recommended)
+
+```
+/plugin marketplace add Rezasz/code-security-guardian
+/plugin install code-security-guardian@code-security-guardian
+```
+
+To get updates later:
+
+```
+/plugin marketplace update code-security-guardian
+```
+
 ### From the zip
 
 ```bash
@@ -107,7 +120,7 @@ That's it. Claude detects your stack, loads the right rules, runs the scanner, c
 
 ### 1 — Run a scan
 
-Inside Claude Code, type:
+Once installed (see [Install](#install)), inside Claude Code type:
 
 ```
 /code-security-guardian:security-scan
