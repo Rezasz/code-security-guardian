@@ -1,0 +1,206 @@
+rules:
+  - id: INFRA_DOCKER_USER_ROOT
+    severity: high
+    category: container-security
+    cwe: CWE-250
+    languages: []
+    extensions: []
+    filename_pattern: '^[Dd]ockerfile'
+    pattern: '^\s*USER\s+root\s*$'
+    pattern_type: regex
+    pattern_flags: [MULTILINE]
+    message: "Dockerfile sets USER to root."
+    fix_hint: "Create a non-root user: RUN adduser --system appuser && USER appuser"
+    confidence: high
+    false_positive_hints: []
+    references:
+      - https://docs.docker.com/develop/develop-images/dockerfile_best-practices/#user
+    enabled: true
+    source: core
+    added: 2025-01-15
+
+  - id: INFRA_DOCKER_LATEST_TAG
+    severity: medium
+    category: container-security
+    cwe: null
+    languages: []
+    extensions: []
+    filename_pattern: '^[Dd]ockerfile'
+    pattern: '^\s*FROM\s+[^\s:]+:latest'
+    pattern_type: regex
+    pattern_flags: [MULTILINE]
+    message: "Dockerfile uses :latest tag — non-reproducible builds."
+    fix_hint: "Pin to a specific version: FROM node:20.11.1-alpine3.19"
+    confidence: high
+    false_positive_hints: []
+    references: []
+    enabled: true
+    source: core
+    added: 2025-01-15
+
+  - id: INFRA_DOCKER_ADD_URL
+    severity: medium
+    category: container-security
+    cwe: null
+    languages: []
+    extensions: []
+    filename_pattern: '^[Dd]ockerfile'
+    pattern: '^\s*ADD\s+https?://'
+    pattern_type: regex
+    pattern_flags: [MULTILINE]
+    message: "Dockerfile ADD from URL — no checksum verification."
+    fix_hint: "Use RUN curl with --fail and a pinned checksum, then COPY."
+    confidence: high
+    false_positive_hints: []
+    references: []
+    enabled: true
+    source: core
+    added: 2025-01-15
+
+  - id: INFRA_K8S_PRIVILEGED
+    severity: critical
+    category: container-security
+    cwe: CWE-250
+    languages: []
+    extensions: [.yaml, .yml]
+    pattern: 'privileged\s*:\s*true'
+    pattern_type: regex
+    pattern_flags: []
+    message: "Kubernetes container running as privileged — effectively root on the node."
+    fix_hint: "Set privileged: false. Use specific capabilities with capabilities.add if needed."
+    confidence: high
+    false_positive_hints: []
+    references: []
+    enabled: true
+    source: core
+    added: 2025-01-15
+
+  - id: INFRA_K8S_HOST_NETWORK
+    severity: high
+    category: container-security
+    cwe: CWE-284
+    languages: []
+    extensions: [.yaml, .yml]
+    pattern: 'hostNetwork\s*:\s*true'
+    pattern_type: regex
+    pattern_flags: []
+    message: "Kubernetes pod using hostNetwork: true — bypasses network isolation." # codesec-ignore: INFRA_K8S_HOST_NETWORK
+    fix_hint: "Remove hostNetwork: true unless absolutely required." # codesec-ignore: INFRA_K8S_HOST_NETWORK
+    confidence: high
+    false_positive_hints: []
+    references: []
+    enabled: true
+    source: core
+    added: 2025-01-15
+
+  - id: INFRA_K8S_RUN_AS_ROOT
+    severity: high
+    category: container-security
+    cwe: CWE-250
+    languages: []
+    extensions: [.yaml, .yml]
+    pattern: 'runAsUser\s*:\s*0\b'
+    pattern_type: regex
+    pattern_flags: []
+    message: "Kubernetes container configured to run as UID 0 (root)."
+    fix_hint: "Set runAsNonRoot: true and specify a non-zero runAsUser."
+    confidence: high
+    false_positive_hints: []
+    references: []
+    enabled: true
+    source: core
+    added: 2025-01-15
+
+  - id: INFRA_TF_S3_PUBLIC
+    severity: critical
+    category: cloud-misconfiguration
+    cwe: CWE-732
+    languages: []
+    extensions: [.tf]
+    pattern: 'acl\s*=\s*"public-read(?:-write)?"'
+    pattern_type: regex
+    pattern_flags: []
+    message: "Terraform S3 bucket with public ACL."
+    fix_hint: 'Use acl = "private" and configure explicit bucket policies.'
+    confidence: high
+    false_positive_hints: []
+    references: []
+    enabled: true
+    source: core
+    added: 2025-01-15
+
+  - id: INFRA_TF_SG_OPEN
+    severity: critical
+    category: cloud-misconfiguration
+    cwe: CWE-732
+    languages: []
+    extensions: [.tf]
+    pattern: 'cidr_blocks\s*=\s*\[\s*"0\.0\.0\.0/0"\s*\]'
+    pattern_type: regex
+    pattern_flags: []
+    message: "Terraform security group open to 0.0.0.0/0 — verify sensitive ports are not exposed."
+    fix_hint: "Restrict to specific IP ranges or use VPN/bastion."
+    confidence: medium
+    false_positive_hints:
+      - "Used for HTTP/HTTPS (80/443) ingress — acceptable for public-facing load balancers"
+    references: []
+    enabled: true
+    source: core
+    added: 2025-01-15
+
+  - id: INFRA_TF_IAM_WILDCARD
+    severity: critical
+    category: cloud-misconfiguration
+    cwe: CWE-732
+    languages: []
+    extensions: [.tf, .json]
+    pattern: '"Action"\s*:\s*"\*"'
+    pattern_type: regex
+    pattern_flags: []
+    message: "IAM policy with wildcard Action — over-permissive."
+    fix_hint: "Apply least privilege: specify exact actions and resource ARNs."
+    confidence: high
+    false_positive_hints: []
+    references: []
+    enabled: true
+    source: core
+    added: 2025-01-15
+
+  - id: INFRA_GHA_PULL_REQUEST_TARGET
+    severity: critical
+    category: ci-cd
+    cwe: CWE-829
+    languages: []
+    extensions: [.yml, .yaml]
+    pattern: 'on:\s*pull_request_target'
+    pattern_type: regex
+    pattern_flags: []
+    message: "GitHub Actions pull_request_target — fork PR code may run with repo secrets."
+    fix_hint: "Do not checkout PR code in pull_request_target, or use a two-workflow pattern."
+    confidence: medium
+    false_positive_hints:
+      - "Workflow does not check out PR code and does not use secrets"
+    references:
+      - https://securitylab.github.com/research/github-actions-preventing-pwn-requests/
+    enabled: true
+    source: core
+    added: 2025-01-15
+
+  - id: INFRA_GHA_UNQUOTED_EXPR
+    severity: high
+    category: ci-cd
+    cwe: CWE-78
+    languages: []
+    extensions: [.yml, .yaml]
+    pattern: 'run:.*\$\{\{\s*github\.event\.(pull_request\.|issue\.)'
+    pattern_type: regex
+    pattern_flags: []
+    message: "GitHub Actions run step uses unquoted github.event expression — command injection risk."
+    fix_hint: "Assign to an env var first, then reference as $ENV_VAR in the run step."
+    confidence: high
+    false_positive_hints: []
+    references:
+      - https://docs.github.com/en/actions/security-guides/security-hardening-for-github-actions
+    enabled: true
+    source: core
+    added: 2025-01-15

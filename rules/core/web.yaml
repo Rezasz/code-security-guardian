@@ -1,0 +1,193 @@
+rules:
+  - id: WEB_DANGEROUS_INNER_HTML
+    severity: high
+    category: xss
+    cwe: CWE-79
+    languages: [js, jsx, ts, tsx]
+    extensions: [.js, .jsx, .ts, .tsx]
+    pattern: 'dangerouslySetInnerHTML'
+    pattern_type: regex
+    pattern_flags: []
+    message: "dangerouslySetInnerHTML may introduce XSS if content is not sanitized."
+    fix_hint: "Sanitize with DOMPurify.sanitize() before setting. Use textContent for plain text."
+    confidence: high
+    false_positive_hints:
+      - "Constant string literal passed in (no dynamic content)"
+      - "Content is always a static import"
+    references:
+      - https://react.dev/reference/react-dom/components/common#dangerously-setting-the-inner-html
+    enabled: true
+    source: core
+    added: 2025-01-15
+
+  - id: WEB_INNERHTML_ASSIGN
+    severity: high
+    category: xss
+    cwe: CWE-79
+    languages: [js, jsx, ts, tsx, html]
+    extensions: [.js, .jsx, .ts, .tsx, .html]
+    pattern: '\.innerHTML\s*='
+    pattern_type: regex
+    pattern_flags: []
+    message: "Direct innerHTML assignment may introduce XSS."
+    fix_hint: "Use textContent for plain text, or DOMPurify.sanitize() for HTML."
+    confidence: medium
+    false_positive_hints:
+      - "Assigned a literal string with no user data"
+    references:
+      - https://cheatsheetseries.owasp.org/cheatsheets/DOM_based_XSS_Prevention_Cheat_Sheet.html
+    enabled: true
+    source: core
+    added: 2025-01-15
+
+  - id: WEB_VUE_HTML
+    severity: high
+    category: xss
+    cwe: CWE-79
+    languages: [vue, js, ts]
+    extensions: [.vue, .js, .ts]
+    pattern: 'v-html\s*='
+    pattern_type: regex
+    pattern_flags: []
+    message: "v-html directive may introduce XSS if content is not sanitized."
+    fix_hint: "Sanitize with DOMPurify before using v-html. Use {{ }} (auto-escaped) for text."
+    confidence: high
+    false_positive_hints: []
+    references:
+      - https://vuejs.org/guide/best-practices/security.html
+    enabled: true
+    source: core
+    added: 2025-01-15
+
+  - id: WEB_SVELTE_HTML
+    severity: high
+    category: xss
+    cwe: CWE-79
+    languages: [svelte]
+    extensions: [.svelte]
+    pattern: '\{@html\s'
+    pattern_type: regex
+    pattern_flags: []
+    message: "{@html} in Svelte may introduce XSS if content is not sanitized."
+    fix_hint: "Sanitize with DOMPurify: {@html DOMPurify.sanitize(content)}"
+    confidence: high
+    false_positive_hints: []
+    references:
+      - https://svelte.dev/docs/special-tags#html
+    enabled: true
+    source: core
+    added: 2025-01-15
+
+  - id: WEB_ANGULAR_BYPASS_TRUST
+    severity: high
+    category: xss
+    cwe: CWE-79
+    languages: [ts, js]
+    extensions: [.ts, .js]
+    pattern: 'bypassSecurityTrust(Html|Script|Style|Url|ResourceUrl)'
+    pattern_type: regex
+    pattern_flags: []
+    message: "Angular bypassSecurityTrust* disables XSS protection."
+    fix_hint: "Avoid these methods. If necessary, sanitize content before passing."
+    confidence: high
+    false_positive_hints: []
+    references:
+      - https://angular.dev/best-practices/security
+    enabled: true
+    source: core
+    added: 2025-01-15
+
+  - id: WEB_EVAL
+    severity: critical
+    category: code-injection
+    cwe: CWE-95
+    languages: [js, jsx, ts, tsx, mjs, cjs]
+    extensions: [.js, .jsx, .ts, .tsx, .mjs, .cjs]
+    pattern: '\beval\s*\('
+    pattern_type: regex
+    pattern_flags: []
+    message: "eval() can execute arbitrary code."
+    fix_hint: "Never eval user input. Use JSON.parse for data."
+    confidence: medium
+    false_positive_hints:
+      - "eval( in test/fixture files"
+      - "eval( with a literal string constant"
+    references:
+      - https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/eval#never_use_eval
+    enabled: true
+    source: core
+    added: 2025-01-15
+
+  - id: WEB_NEW_FUNCTION
+    severity: critical
+    category: code-injection
+    cwe: CWE-95
+    languages: [js, jsx, ts, tsx, mjs, cjs]
+    extensions: [.js, .jsx, .ts, .tsx, .mjs, .cjs]
+    pattern: 'new\s+Function\s*\('
+    pattern_type: regex
+    pattern_flags: []
+    message: "new Function() is equivalent to eval()."
+    fix_hint: "Remove dynamic function construction from user input."
+    confidence: high
+    false_positive_hints: []
+    references: []
+    enabled: true
+    source: core
+    added: 2025-01-15
+
+  - id: WEB_DOCUMENT_WRITE
+    severity: high
+    category: xss
+    cwe: CWE-79
+    languages: [js, jsx, ts, tsx, html]
+    extensions: [.js, .jsx, .ts, .tsx, .html]
+    pattern: 'document\.write\s*\('
+    pattern_type: regex
+    pattern_flags: []
+    message: "document.write() is a known XSS sink."
+    fix_hint: "Use DOM APIs (createElement, textContent) instead."
+    confidence: medium
+    false_positive_hints: []
+    references: []
+    enabled: true
+    source: core
+    added: 2025-01-15
+
+  - id: WEB_LOCALSTORAGE_TOKEN
+    severity: medium
+    category: insecure-storage
+    cwe: CWE-922
+    languages: [js, jsx, ts, tsx]
+    extensions: [.js, .jsx, .ts, .tsx]
+    pattern: "localStorage\\.setItem\\s*\\(\\s*['\"][^'\"]*(?:token|jwt|auth|secret|session)[^'\"]*['\"]"
+    pattern_type: regex
+    pattern_flags: [IGNORECASE]
+    message: "Storing auth tokens in localStorage (accessible to XSS)."
+    fix_hint: "Use HttpOnly cookies for session tokens."
+    confidence: high
+    false_positive_hints: []
+    references:
+      - https://cheatsheetseries.owasp.org/cheatsheets/HTML5_Security_Cheat_Sheet.html
+    enabled: true
+    source: core
+    added: 2025-01-15
+
+  - id: WEB_TARGET_BLANK
+    severity: medium
+    category: open-redirect
+    cwe: CWE-1022
+    languages: [html, jsx, tsx, vue, svelte]
+    extensions: [.html, .jsx, .tsx, .vue, .svelte, .ejs, .hbs]
+    pattern: 'target=["''"]_blank["''"](?!.*?rel=)'
+    pattern_type: regex
+    pattern_flags: [IGNORECASE]
+    message: 'target="_blank" without rel="noopener noreferrer" allows window.opener access.'
+    fix_hint: 'Add rel="noopener noreferrer" to all target="_blank" links.'
+    confidence: high
+    false_positive_hints: []
+    references:
+      - https://developer.chrome.com/docs/lighthouse/best-practices/external-anchors-use-rel-noopener
+    enabled: true
+    source: core
+    added: 2025-01-15

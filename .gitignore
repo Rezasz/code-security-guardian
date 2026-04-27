@@ -1,0 +1,9 @@
+.DS_Store
+__pycache__/
+*.pyc
+*.pyo
+memory/feedback-log.jsonl
+memory/findings-log.jsonl
+memory/research-cache.jsonl
+memory/applied-proposals.jsonl
+memory/_pending-proposals.json

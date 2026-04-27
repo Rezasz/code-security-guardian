@@ -1,0 +1,1275 @@
+#!/usr/bin/env python3
+"""
+codesec-scan — Code Security Guardian scanner
+Regex-based static analysis across all stacks. Stdlib only, Python 3.8+.
+Author: kanz.ai <reza@kanz.ai>
+"""
+
+import argparse
+import fnmatch
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+from typing import Dict, Generator, List, Optional, Tuple
+
+# ─── ANSI colors ──────────────────────────────────────────────────────────────
+NO_COLOR = not sys.stdout.isatty() or os.environ.get("NO_COLOR")
+RED    = "" if NO_COLOR else "\033[31m"
+ORANGE = "" if NO_COLOR else "\033[33m"
+YELLOW = "" if NO_COLOR else "\033[93m"
+BLUE   = "" if NO_COLOR else "\033[34m"
+CYAN   = "" if NO_COLOR else "\033[36m"
+BOLD   = "" if NO_COLOR else "\033[1m"
+RESET  = "" if NO_COLOR else "\033[0m"
+
+SEV_COLOR = {
+    "critical": RED + BOLD,
+    "high":     ORANGE + BOLD,
+    "medium":   YELLOW,
+    "low":      BLUE,
+    "info":     CYAN,
+}
+SEV_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+
+# ─── Skip directories ─────────────────────────────────────────────────────────
+SKIP_DIRS = {
+    "node_modules", ".git", "dist", "build", "target", "vendor",
+    ".venv", "venv", "__pycache__", ".next", ".nuxt", ".output",
+    ".cache", "coverage", ".nyc_output", "htmlcov", ".pytest_cache",
+    ".tox", "eggs", ".eggs", "*.egg-info", "bower_components",
+}
+
+SKIP_EXTENSIONS = {
+    ".png", ".jpg", ".jpeg", ".gif", ".svg", ".ico", ".webp",
+    ".pdf", ".zip", ".tar", ".gz", ".bz2", ".xz", ".7z",
+    ".mp4", ".mp3", ".wav", ".avi", ".mov",
+    ".woff", ".woff2", ".ttf", ".eot",
+    ".pyc", ".pyo", ".class", ".jar", ".war",
+    ".exe", ".dll", ".so", ".dylib", ".a",
+    ".lock",  # package-lock.json handled separately
+}
+
+TEST_PATH_PATTERNS = [
+    "test", "tests", "spec", "specs", "__tests__", "fixtures",
+    "mocks", "__mocks__", "stubs", "test_helpers",
+]
+
+# ─── Rule definitions ──────────────────────────────────────────────────────────
+# Each rule: (rule_id, severity, category, cwe, pattern_flags, pattern, message, fix_hint, extensions_or_None)
+# extensions_or_None: None = all files, otherwise set of lowercase extensions (with dot)
+
+RULES: List[Dict] = [
+    # ── SECRETS (all files) ───────────────────────────────────────────────────
+    {
+        "rule_id": "SECRETS_AWS_ACCESS_KEY",
+        "severity": "critical",
+        "category": "secrets",
+        "cwe": "CWE-798",
+        "pattern": r"AKIA[0-9A-Z]{16}",
+        "message": "Hardcoded AWS Access Key ID detected.",
+        "fix_hint": "Remove from source. Use IAM roles or environment variables. Rotate the key immediately.",
+        "extensions": None,
+        "flags": 0,
+    },
+    {
+        "rule_id": "SECRETS_AWS_SECRET_KEY",
+        "severity": "critical",
+        "category": "secrets",
+        "cwe": "CWE-798",
+        "pattern": r"(?i)(aws_secret_access_key|aws_secret|SecretAccessKey)\s*[=:]\s*['\"]?([A-Za-z0-9/+]{40})['\"]?",
+        "message": "Hardcoded AWS Secret Access Key detected.",
+        "fix_hint": "Use environment variables, AWS Secrets Manager, or IAM roles.",
+        "extensions": None,
+        "flags": re.IGNORECASE,
+    },
+    {
+        "rule_id": "SECRETS_PRIVATE_KEY",
+        "severity": "critical",
+        "category": "secrets",
+        "cwe": "CWE-321",
+        "pattern": r"-----BEGIN (RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----",
+        "message": "Private key material found in source.",
+        "fix_hint": "Remove immediately. Add to .gitignore. Generate a new key pair.",
+        "extensions": None,
+        "flags": 0,
+    },
+    {
+        "rule_id": "SECRETS_STRIPE_LIVE_KEY",
+        "severity": "critical",
+        "category": "secrets",
+        "cwe": "CWE-798",
+        "pattern": r"sk_live_[0-9a-zA-Z]{24,}",
+        "message": "Stripe live secret key detected.",
+        "fix_hint": "Rotate via Stripe dashboard. Move to environment variable.",
+        "extensions": None,
+        "flags": 0,
+    },
+    {
+        "rule_id": "SECRETS_GITHUB_TOKEN",
+        "severity": "critical",
+        "category": "secrets",
+        "cwe": "CWE-798",
+        "pattern": r"(ghp_[A-Za-z0-9]{36}|gho_[A-Za-z0-9]{36}|ghs_[A-Za-z0-9]{36}|ghu_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{82})",
+        "message": "GitHub token detected.",
+        "fix_hint": "Revoke via GitHub settings. Store in CI/CD secrets or environment variables.",
+        "extensions": None,
+        "flags": 0,
+    },
+    {
+        "rule_id": "SECRETS_OPENAI_KEY",
+        "severity": "high",
+        "category": "secrets",
+        "cwe": "CWE-798",
+        "pattern": r"sk-[A-Za-z0-9]{32,}",
+        "message": "Possible OpenAI API key detected.",
+        "fix_hint": "Rotate via OpenAI dashboard. Use environment variable.",
+        "extensions": None,
+        "flags": 0,
+    },
+    {
+        "rule_id": "SECRETS_ANTHROPIC_KEY",
+        "severity": "high",
+        "category": "secrets",
+        "cwe": "CWE-798",
+        "pattern": r"sk-ant-[A-Za-z0-9_\-]{32,}",
+        "message": "Anthropic API key detected.",
+        "fix_hint": "Rotate via Anthropic console. Use environment variable.",
+        "extensions": None,
+        "flags": 0,
+    },
+    {
+        "rule_id": "SECRETS_SLACK_TOKEN",
+        "severity": "high",
+        "category": "secrets",
+        "cwe": "CWE-798",
+        "pattern": r"xox[baprs]-[A-Za-z0-9\-]+",
+        "message": "Slack token detected.",
+        "fix_hint": "Revoke via Slack App settings. Store in environment variables.",
+        "extensions": None,
+        "flags": 0,
+    },
+    {
+        "rule_id": "SECRETS_SLACK_WEBHOOK",
+        "severity": "medium",
+        "category": "secrets",
+        "cwe": "CWE-798",
+        "pattern": r"https://hooks\.slack\.com/services/T[A-Za-z0-9]+/B[A-Za-z0-9]+/[A-Za-z0-9]+",
+        "message": "Slack incoming webhook URL detected.",
+        "fix_hint": "Move to environment variable. Regenerate if exposed publicly.",
+        "extensions": None,
+        "flags": 0,
+    },
+    {
+        "rule_id": "SECRETS_SENDGRID_KEY",
+        "severity": "high",
+        "category": "secrets",
+        "cwe": "CWE-798",
+        "pattern": r"SG\.[A-Za-z0-9_\-]{22}\.[A-Za-z0-9_\-]{43}",
+        "message": "SendGrid API key detected.",
+        "fix_hint": "Rotate via SendGrid dashboard. Store in environment variable.",
+        "extensions": None,
+        "flags": 0,
+    },
+    {
+        "rule_id": "SECRETS_GCP_SERVICE_ACCOUNT",
+        "severity": "critical",
+        "category": "secrets",
+        "cwe": "CWE-798",
+        "pattern": r'"private_key"\s*:\s*"-----BEGIN',
+        "message": "GCP service account private key found in source.",
+        "fix_hint": "Remove from source. Store in Secret Manager or use Workload Identity.",
+        "extensions": None,
+        "flags": 0,
+    },
+    {
+        "rule_id": "SECRETS_DB_URL_POSTGRES",
+        "severity": "critical",
+        "category": "secrets",
+        "cwe": "CWE-798",
+        "pattern": r"postgres(?:ql)?://[^:@\s]+:[^@\s]+@",
+        "message": "PostgreSQL connection string with embedded credentials.",
+        "fix_hint": "Move to environment variable. Use a secrets manager.",
+        "extensions": None,
+        "flags": re.IGNORECASE,
+    },
+    {
+        "rule_id": "SECRETS_DB_URL_MYSQL",
+        "severity": "critical",
+        "category": "secrets",
+        "cwe": "CWE-798",
+        "pattern": r"mysql(?:\+[a-z]+)?://[^:@\s]+:[^@\s]+@",
+        "message": "MySQL connection string with embedded credentials.",
+        "fix_hint": "Move to environment variable. Use a secrets manager.",
+        "extensions": None,
+        "flags": re.IGNORECASE,
+    },
+    {
+        "rule_id": "SECRETS_DB_URL_MONGODB",
+        "severity": "critical",
+        "category": "secrets",
+        "cwe": "CWE-798",
+        "pattern": r"mongodb(?:\+srv)?://[^:@\s]+:[^@\s]+@",
+        "message": "MongoDB connection string with embedded credentials.",
+        "fix_hint": "Move to environment variable. Use a secrets manager.",
+        "extensions": None,
+        "flags": re.IGNORECASE,
+    },
+    {
+        "rule_id": "SECRETS_DB_URL_REDIS",
+        "severity": "high",
+        "category": "secrets",
+        "cwe": "CWE-798",
+        "pattern": r"redis(?:s)?://:[^@\s]+@",
+        "message": "Redis connection string with embedded password.",
+        "fix_hint": "Move to environment variable.",
+        "extensions": None,
+        "flags": re.IGNORECASE,
+    },
+    {
+        "rule_id": "SECRETS_GENERIC_JWT_SECRET",
+        "severity": "critical",
+        "category": "secrets",
+        "cwe": "CWE-798",
+        "pattern": r'(?i)(jwt_secret|jwtSecret|JWT_SECRET)\s*[=:]\s*["\'][^"\']{8,}["\']',
+        "message": "Hardcoded JWT secret detected.",
+        "fix_hint": "Use a cryptographically random secret from environment variables (min 256 bits).",
+        "extensions": None,
+        "flags": re.IGNORECASE,
+    },
+    # ── WEB (JS/TS/HTML) ───────────────────────────────────────────────────────
+    {
+        "rule_id": "WEB_DANGEROUS_INNER_HTML",
+        "severity": "high",
+        "category": "xss",
+        "cwe": "CWE-79",
+        "pattern": r"dangerouslySetInnerHTML",
+        "message": "dangerouslySetInnerHTML may introduce XSS if content is not sanitized.",
+        "fix_hint": "Sanitize with DOMPurify.sanitize() before setting. Use textContent for plain text.",
+        "extensions": {".js", ".jsx", ".ts", ".tsx"},
+        "flags": 0,
+    },
+    {
+        "rule_id": "WEB_INNERHTML_ASSIGN",
+        "severity": "high",
+        "category": "xss",
+        "cwe": "CWE-79",
+        "pattern": r"\.innerHTML\s*=",
+        "message": "Direct innerHTML assignment may introduce XSS.",
+        "fix_hint": "Use textContent for plain text, or DOMPurify.sanitize() for HTML.",
+        "extensions": {".js", ".jsx", ".ts", ".tsx", ".html"},
+        "flags": 0,
+    },
+    {
+        "rule_id": "WEB_VUE_HTML",
+        "severity": "high",
+        "category": "xss",
+        "cwe": "CWE-79",
+        "pattern": r"v-html\s*=",
+        "message": "v-html directive may introduce XSS if content is not sanitized.",
+        "fix_hint": "Sanitize with DOMPurify before using v-html.",
+        "extensions": {".vue", ".js", ".ts"},
+        "flags": 0,
+    },
+    {
+        "rule_id": "WEB_SVELTE_HTML",
+        "severity": "high",
+        "category": "xss",
+        "cwe": "CWE-79",
+        "pattern": r"\{@html\s",
+        "message": "{@html} in Svelte may introduce XSS if content is not sanitized.",
+        "fix_hint": "Sanitize with DOMPurify: {@html DOMPurify.sanitize(content)}",
+        "extensions": {".svelte"},
+        "flags": 0,
+    },
+    {
+        "rule_id": "WEB_ANGULAR_BYPASS_TRUST",
+        "severity": "high",
+        "category": "xss",
+        "cwe": "CWE-79",
+        "pattern": r"bypassSecurityTrust(Html|Script|Style|Url|ResourceUrl)",
+        "message": "Angular bypassSecurityTrust* disables XSS protection.",
+        "fix_hint": "Avoid these methods. If necessary, sanitize content before passing.",
+        "extensions": {".ts", ".js"},
+        "flags": 0,
+    },
+    {
+        "rule_id": "WEB_EVAL",
+        "severity": "critical",
+        "category": "code-injection",
+        "cwe": "CWE-95",
+        "pattern": r"\beval\s*\(",
+        "message": "eval() can execute arbitrary code.",
+        "fix_hint": "Never eval user input. Use JSON.parse for data.",
+        "extensions": {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"},
+        "flags": 0,
+    },
+    {
+        "rule_id": "WEB_NEW_FUNCTION",
+        "severity": "critical",
+        "category": "code-injection",
+        "cwe": "CWE-95",
+        "pattern": r"new\s+Function\s*\(",
+        "message": "new Function() is equivalent to eval().",
+        "fix_hint": "Remove dynamic function construction from user input.",
+        "extensions": {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"},
+        "flags": 0,
+    },
+    {
+        "rule_id": "WEB_DOCUMENT_WRITE",
+        "severity": "high",
+        "category": "xss",
+        "cwe": "CWE-79",
+        "pattern": r"document\.write\s*\(",
+        "message": "document.write() is a known XSS sink.",
+        "fix_hint": "Use DOM APIs (createElement, textContent) instead.",
+        "extensions": {".js", ".jsx", ".ts", ".tsx", ".html"},
+        "flags": 0,
+    },
+    {
+        "rule_id": "WEB_LOCALSTORAGE_TOKEN",
+        "severity": "medium",
+        "category": "insecure-storage",
+        "cwe": "CWE-922",
+        "pattern": r"localStorage\.setItem\s*\(\s*['\"][^'\"]*(?:token|jwt|auth|secret|session)[^'\"]*['\"]",
+        "message": "Storing auth tokens in localStorage (accessible to XSS).",
+        "fix_hint": "Use HttpOnly cookies for session tokens.",
+        "extensions": {".js", ".jsx", ".ts", ".tsx"},
+        "flags": re.IGNORECASE,
+    },
+    {
+        "rule_id": "WEB_SESSIONSTORAGE_TOKEN",
+        "severity": "low",
+        "category": "insecure-storage",
+        "cwe": "CWE-922",
+        "pattern": r"sessionStorage\.setItem\s*\(\s*['\"][^'\"]*(?:token|jwt|auth)[^'\"]*['\"]",
+        "message": "Storing auth tokens in sessionStorage (accessible to XSS).",
+        "fix_hint": "Use HttpOnly cookies for session tokens.",
+        "extensions": {".js", ".jsx", ".ts", ".tsx"},
+        "flags": re.IGNORECASE,
+    },
+    {
+        "rule_id": "WEB_TARGET_BLANK",
+        "severity": "medium",
+        "category": "open-redirect",
+        "cwe": "CWE-1022",
+        "pattern": r'target=["\']_blank["\'](?!.*?rel=)',
+        "message": 'target="_blank" without rel="noopener noreferrer" allows window.opener access.',
+        "fix_hint": 'Add rel="noopener noreferrer" to all target="_blank" links.',
+        "extensions": {".html", ".jsx", ".tsx", ".vue", ".svelte", ".ejs", ".hbs"},
+        "flags": re.IGNORECASE,
+    },
+    # ── BACKEND PYTHON ─────────────────────────────────────────────────────────
+    {
+        "rule_id": "BACKEND_PYTHON_EVAL",
+        "severity": "critical",
+        "category": "code-injection",
+        "cwe": "CWE-95",
+        "pattern": r"\beval\s*\(",
+        "message": "eval() can execute arbitrary code.",
+        "fix_hint": "Remove eval(). Use ast.literal_eval() for safe expression evaluation.",
+        "extensions": {".py"},
+        "flags": 0,
+    },
+    {
+        "rule_id": "BACKEND_PYTHON_EXEC",
+        "severity": "critical",
+        "category": "code-injection",
+        "cwe": "CWE-95",
+        "pattern": r"\bexec\s*\(",
+        "message": "exec() can execute arbitrary code.",
+        "fix_hint": "Remove exec() with user input.",
+        "extensions": {".py"},
+        "flags": 0,
+    },
+    {
+        "rule_id": "BACKEND_PYTHON_OS_SYSTEM",
+        "severity": "critical",
+        "category": "command-injection",
+        "cwe": "CWE-78",
+        "pattern": r"\bos\.system\s*\(",
+        "message": "os.system() may be vulnerable to command injection.",
+        "fix_hint": "Use subprocess.run(['cmd', arg], shell=False) with a list of arguments.",
+        "extensions": {".py"},
+        "flags": 0,
+    },
+    {
+        "rule_id": "BACKEND_PYTHON_SUBPROCESS_SHELL",
+        "severity": "critical",
+        "category": "command-injection",
+        "cwe": "CWE-78",
+        "pattern": r"subprocess\.\w+\([^)]*shell\s*=\s*True",
+        "message": "subprocess with shell=True is vulnerable to command injection.",
+        "fix_hint": "Use shell=False with a list of arguments: subprocess.run(['cmd', arg], shell=False)",
+        "extensions": {".py"},
+        "flags": 0,
+    },
+    {
+        "rule_id": "BACKEND_PYTHON_PICKLE",
+        "severity": "critical",
+        "category": "unsafe-deserialization",
+        "cwe": "CWE-502",
+        "pattern": r"\bpickle\.loads?\s*\(",
+        "message": "pickle.load(s) with untrusted data allows arbitrary code execution.",
+        "fix_hint": "Use JSON or another safe serialization format. Never unpickle untrusted data.",
+        "extensions": {".py"},
+        "flags": 0,
+    },
+    {
+        "rule_id": "BACKEND_PYTHON_YAML_UNSAFE",
+        "severity": "critical",
+        "category": "unsafe-deserialization",
+        "cwe": "CWE-502",
+        "pattern": r"yaml\.load\s*\((?!.*Loader)",
+        "message": "yaml.load() without explicit SafeLoader allows code execution.",
+        "fix_hint": "Use yaml.safe_load() or yaml.load(data, Loader=yaml.SafeLoader)",
+        "extensions": {".py"},
+        "flags": 0,
+    },
+    {
+        "rule_id": "BACKEND_PYTHON_SQLI_FORMAT",
+        "severity": "critical",
+        "category": "sql-injection",
+        "cwe": "CWE-89",
+        "pattern": r"\.execute\s*\(\s*['\"][^'\"]*(?:SELECT|INSERT|UPDATE|DELETE|WHERE)[^'\"]*['\"]\s*%",
+        "message": "SQL query built with % string formatting — SQL injection risk.",
+        "fix_hint": "Use parameterized queries: cursor.execute('SELECT * FROM t WHERE id = %s', (user_id,))",
+        "extensions": {".py"},
+        "flags": re.IGNORECASE,
+    },
+    {
+        "rule_id": "BACKEND_PYTHON_SQLI_FORMAT_METHOD",
+        "severity": "critical",
+        "category": "sql-injection",
+        "cwe": "CWE-89",
+        "pattern": r"\.execute\s*\(.*\.format\s*\(",
+        "message": "SQL query built with .format() — SQL injection risk.",
+        "fix_hint": "Use parameterized queries instead of string formatting.",
+        "extensions": {".py"},
+        "flags": re.IGNORECASE,
+    },
+    {
+        "rule_id": "BACKEND_PYTHON_SQLI_FSTRING",
+        "severity": "critical",
+        "category": "sql-injection",
+        "cwe": "CWE-89",
+        "pattern": r'\.execute\s*\(\s*f["\']',
+        "message": "SQL query built with f-string — SQL injection risk.",
+        "fix_hint": "Use parameterized queries. Never interpolate variables into SQL.",
+        "extensions": {".py"},
+        "flags": 0,
+    },
+    {
+        "rule_id": "BACKEND_PYTHON_REQUESTS_NO_VERIFY",
+        "severity": "high",
+        "category": "tls",
+        "cwe": "CWE-295",
+        "pattern": r"requests\.\w+\([^)]*verify\s*=\s*False",
+        "message": "requests with verify=False disables TLS certificate validation.",
+        "fix_hint": "Remove verify=False. If using a private CA, pass verify='/path/to/ca-bundle.crt'",
+        "extensions": {".py"},
+        "flags": 0,
+    },
+    {
+        "rule_id": "BACKEND_PYTHON_WEAK_HASH_PASSWORD",
+        "severity": "critical",
+        "category": "weak-crypto",
+        "cwe": "CWE-916",
+        "pattern": r"hashlib\.(md5|sha1)\s*\([^)]*(?:password|passwd|pwd)",
+        "message": "MD5/SHA1 used for password hashing — these are too fast for password storage.",
+        "fix_hint": "Use bcrypt or argon2: pip install argon2-cffi; from argon2 import PasswordHasher",
+        "extensions": {".py"},
+        "flags": re.IGNORECASE,
+    },
+    {
+        "rule_id": "BACKEND_PYTHON_FLASK_DEBUG",
+        "severity": "high",
+        "category": "debug-mode",
+        "cwe": "CWE-94",
+        "pattern": r"app\.run\s*\([^)]*debug\s*=\s*True",
+        "message": "Flask debug mode enabled — exposes interactive debugger to users.",
+        "fix_hint": "Use DEBUG = os.environ.get('DEBUG', 'False') == 'True'",
+        "extensions": {".py"},
+        "flags": 0,
+    },
+    {
+        "rule_id": "BACKEND_PYTHON_DJANGO_DEBUG",
+        "severity": "high",
+        "category": "debug-mode",
+        "cwe": "CWE-94",
+        "pattern": r"^\s*DEBUG\s*=\s*True",
+        "message": "Django DEBUG=True found — exposes stack traces and SQL queries to users.",
+        "fix_hint": "Use DEBUG = os.environ.get('DEBUG', 'False') == 'True'",
+        "extensions": {".py"},
+        "flags": re.MULTILINE,
+    },
+    # ── BACKEND NODE ───────────────────────────────────────────────────────────
+    {
+        "rule_id": "BACKEND_NODE_EXEC",
+        "severity": "critical",
+        "category": "command-injection",
+        "cwe": "CWE-78",
+        "pattern": r"child_process\.exec\s*\(",
+        "message": "child_process.exec() passes command to a shell — command injection risk.",
+        "fix_hint": "Use execFile() or spawn() with argument arrays instead.",
+        "extensions": {".js", ".ts", ".mjs", ".cjs"},
+        "flags": 0,
+    },
+    {
+        "rule_id": "BACKEND_NODE_EXEC_SYNC_TEMPLATE",
+        "severity": "critical",
+        "category": "command-injection",
+        "cwe": "CWE-78",
+        "pattern": r"execSync\s*\(`[^`]*\$\{",
+        "message": "execSync with template literal may allow command injection.",
+        "fix_hint": "Use execFileSync with an argument array.",
+        "extensions": {".js", ".ts", ".mjs", ".cjs"},
+        "flags": 0,
+    },
+    {
+        "rule_id": "BACKEND_NODE_VM_RUN",
+        "severity": "critical",
+        "category": "code-injection",
+        "cwe": "CWE-95",
+        "pattern": r"vm\.runIn(New|This)Context\s*\(",
+        "message": "vm.runIn*Context() with user input allows sandbox escape.",
+        "fix_hint": "Use a proper sandbox library or avoid dynamic code execution.",
+        "extensions": {".js", ".ts", ".mjs", ".cjs"},
+        "flags": 0,
+    },
+    {
+        "rule_id": "BACKEND_NODE_SQLI_TEMPLATE",
+        "severity": "critical",
+        "category": "sql-injection",
+        "cwe": "CWE-89",
+        "pattern": r"`\s*(?:SELECT|INSERT|UPDATE|DELETE|WHERE)[^`]*\$\{",
+        "message": "SQL query built with template literal — SQL injection risk.",
+        "fix_hint": "Use parameterized queries: db.query('SELECT * FROM t WHERE id = $1', [id])",
+        "extensions": {".js", ".ts", ".mjs", ".cjs"},
+        "flags": re.IGNORECASE,
+    },
+    {
+        "rule_id": "BACKEND_NODE_MONGOOSE_WHERE",
+        "severity": "high",
+        "category": "nosql-injection",
+        "cwe": "CWE-943",
+        "pattern": r"mongoose.*\$where",
+        "message": "MongoDB $where with user input allows NoSQL injection.",
+        "fix_hint": "Never use $where. Use standard query operators.",
+        "extensions": {".js", ".ts"},
+        "flags": re.IGNORECASE,
+    },
+    {
+        "rule_id": "BACKEND_NODE_CORS_WILDCARD",
+        "severity": "medium",
+        "category": "cors",
+        "cwe": "CWE-942",
+        "pattern": r"app\.use\s*\(\s*cors\s*\(\s*\)\s*\)",
+        "message": "cors() with no options defaults to Access-Control-Allow-Origin: *",
+        "fix_hint": "Specify allowed origins: app.use(cors({ origin: ['https://example.com'] }))",
+        "extensions": {".js", ".ts", ".mjs"},
+        "flags": 0,
+    },
+    {
+        "rule_id": "BACKEND_NODE_JWT_NONE_ALG",
+        "severity": "critical",
+        "category": "authentication",
+        "cwe": "CWE-347",
+        "pattern": r"jwt\.verify\s*\([^)]*algorithms\s*:\s*\[[^\]]*['\"]none['\"]",
+        "message": "JWT verification accepts 'none' algorithm — tokens can be forged.",
+        "fix_hint": "Remove 'none' from algorithms list. Always specify: { algorithms: ['HS256'] }",
+        "extensions": {".js", ".ts"},
+        "flags": re.IGNORECASE,
+    },
+    # ── BACKEND GO ─────────────────────────────────────────────────────────────
+    {
+        "rule_id": "BACKEND_GO_SQLI_SPRINTF",
+        "severity": "critical",
+        "category": "sql-injection",
+        "cwe": "CWE-89",
+        "pattern": r'fmt\.Sprintf\s*\(\s*"[^"]*(?:SELECT|INSERT|UPDATE|DELETE|WHERE)',
+        "message": "SQL query built with fmt.Sprintf — SQL injection risk.",
+        "fix_hint": "Use db.QueryContext with parameter placeholders ($1, ?, etc.)",
+        "extensions": {".go"},
+        "flags": re.IGNORECASE,
+    },
+    {
+        "rule_id": "BACKEND_GO_CMDI_CONCAT",
+        "severity": "critical",
+        "category": "command-injection",
+        "cwe": "CWE-78",
+        "pattern": r'exec\.Command\s*\([^)]*\+',
+        "message": "exec.Command with string concatenation may allow command injection.",
+        "fix_hint": "Pass each argument separately: exec.Command('convert', inputFile, outputFile)",
+        "extensions": {".go"},
+        "flags": 0,
+    },
+    {
+        "rule_id": "BACKEND_GO_TLS_INSECURE",
+        "severity": "high",
+        "category": "tls",
+        "cwe": "CWE-295",
+        "pattern": r"InsecureSkipVerify\s*:\s*true",
+        "message": "TLS certificate verification disabled — MITM attacks possible.",
+        "fix_hint": "Remove InsecureSkipVerify or use a proper CA bundle.",
+        "extensions": {".go"},
+        "flags": 0,
+    },
+    # ── BACKEND JAVA ───────────────────────────────────────────────────────────
+    {
+        "rule_id": "BACKEND_JAVA_CMDI",
+        "severity": "critical",
+        "category": "command-injection",
+        "cwe": "CWE-78",
+        "pattern": r"Runtime\.getRuntime\s*\(\s*\)\.exec\s*\([^)]*\+",
+        "message": "Runtime.exec() with string concatenation — command injection risk.",
+        "fix_hint": "Use ProcessBuilder with a String[] argument list.",
+        "extensions": {".java"},
+        "flags": 0,
+    },
+    {
+        "rule_id": "BACKEND_JAVA_SQLI",
+        "severity": "critical",
+        "category": "sql-injection",
+        "cwe": "CWE-89",
+        "pattern": r"executeQuery\s*\([^)]*\+",
+        "message": "SQL query built with string concatenation — SQL injection risk.",
+        "fix_hint": "Use PreparedStatement with parameter placeholders.",
+        "extensions": {".java"},
+        "flags": 0,
+    },
+    {
+        "rule_id": "BACKEND_JAVA_OBJECT_INPUT_STREAM",
+        "severity": "critical",
+        "category": "unsafe-deserialization",
+        "cwe": "CWE-502",
+        "pattern": r"\bnew\s+ObjectInputStream\s*\(",
+        "message": "ObjectInputStream with untrusted data allows arbitrary code execution.",
+        "fix_hint": "Use JSON (Jackson) or protobuf. Implement a serialization filter if ObjectInputStream is required.",
+        "extensions": {".java"},
+        "flags": 0,
+    },
+    # ── BACKEND RUBY ───────────────────────────────────────────────────────────
+    {
+        "rule_id": "BACKEND_RUBY_EVAL",
+        "severity": "critical",
+        "category": "code-injection",
+        "cwe": "CWE-95",
+        "pattern": r"\beval\s*\(",
+        "message": "eval() with user input allows arbitrary code execution.",
+        "fix_hint": "Remove eval(). Use safe parsing alternatives.",
+        "extensions": {".rb"},
+        "flags": 0,
+    },
+    {
+        "rule_id": "BACKEND_RUBY_SYSTEM_INTERP",
+        "severity": "critical",
+        "category": "command-injection",
+        "cwe": "CWE-78",
+        "pattern": r'system\s*\([^)]*#\{',
+        "message": "system() with Ruby string interpolation — command injection risk.",
+        "fix_hint": "Pass arguments as an array: system('convert', input_file, output_file)",
+        "extensions": {".rb"},
+        "flags": 0,
+    },
+    {
+        "rule_id": "BACKEND_RUBY_BACKTICK_INTERP",
+        "severity": "critical",
+        "category": "command-injection",
+        "cwe": "CWE-78",
+        "pattern": r'`[^`]*#\{',
+        "message": "Backtick execution with string interpolation — command injection risk.",
+        "fix_hint": "Use Open3.capture2 with array arguments.",
+        "extensions": {".rb"},
+        "flags": 0,
+    },
+    {
+        "rule_id": "BACKEND_RUBY_MARSHAL",
+        "severity": "critical",
+        "category": "unsafe-deserialization",
+        "cwe": "CWE-502",
+        "pattern": r"\bMarshal\.load\s*\(",
+        "message": "Marshal.load with untrusted data allows arbitrary code execution.",
+        "fix_hint": "Use JSON.parse instead.",
+        "extensions": {".rb"},
+        "flags": 0,
+    },
+    # ── BACKEND PHP ────────────────────────────────────────────────────────────
+    {
+        "rule_id": "BACKEND_PHP_EVAL",
+        "severity": "critical",
+        "category": "code-injection",
+        "cwe": "CWE-95",
+        "pattern": r"\beval\s*\(",
+        "message": "eval() with user input allows arbitrary code execution.",
+        "fix_hint": "Remove eval(). Never eval user-supplied data.",
+        "extensions": {".php"},
+        "flags": 0,
+    },
+    {
+        "rule_id": "BACKEND_PHP_UNSERIALIZE",
+        "severity": "critical",
+        "category": "unsafe-deserialization",
+        "cwe": "CWE-502",
+        "pattern": r"\bunserialize\s*\(",
+        "message": "unserialize() with untrusted data allows arbitrary code execution.",
+        "fix_hint": "Use json_decode() instead.",
+        "extensions": {".php"},
+        "flags": 0,
+    },
+    {
+        "rule_id": "BACKEND_PHP_SYSTEM",
+        "severity": "critical",
+        "category": "command-injection",
+        "cwe": "CWE-78",
+        "pattern": r"\b(system|exec|passthru|shell_exec)\s*\(",
+        "message": "PHP command execution function — command injection risk if args include user input.",
+        "fix_hint": "Use escapeshellarg() on all user input. Prefer not executing shell commands at all.",
+        "extensions": {".php"},
+        "flags": 0,
+    },
+    {
+        "rule_id": "BACKEND_PHP_SQLI_GET",
+        "severity": "critical",
+        "category": "sql-injection",
+        "cwe": "CWE-89",
+        "pattern": r"(?:mysql_query|mysqli_query)\s*\([^)]*\$_(?:GET|POST|REQUEST|COOKIE)",
+        "message": "SQL query with direct $_GET/$_POST interpolation — SQL injection.",
+        "fix_hint": "Use PDO with prepared statements.",
+        "extensions": {".php"},
+        "flags": 0,
+    },
+    {
+        "rule_id": "BACKEND_PHP_XSS_ECHO",
+        "severity": "high",
+        "category": "xss",
+        "cwe": "CWE-79",
+        "pattern": r"echo\s+\$_(?:GET|POST|REQUEST|COOKIE)",
+        "message": "Echoing user input without escaping — XSS vulnerability.",
+        "fix_hint": "Use htmlspecialchars($_GET['x'], ENT_QUOTES, 'UTF-8')",
+        "extensions": {".php"},
+        "flags": 0,
+    },
+    # ── INFRA ──────────────────────────────────────────────────────────────────
+    {
+        "rule_id": "INFRA_DOCKER_USER_ROOT",
+        "severity": "high",
+        "category": "container-security",
+        "cwe": "CWE-250",
+        "pattern": r"^\s*USER\s+root\s*$",
+        "message": "Dockerfile sets USER to root.",
+        "fix_hint": "Create a non-root user: RUN adduser --system appuser && USER appuser",
+        "extensions": {".dockerfile", ""},  # also matches files named Dockerfile
+        "flags": re.MULTILINE,
+        "filename_pattern": r"^[Dd]ockerfile",
+    },
+    {
+        "rule_id": "INFRA_DOCKER_LATEST_TAG",
+        "severity": "medium",
+        "category": "container-security",
+        "cwe": None,
+        "pattern": r"^\s*FROM\s+[^\s:]+:latest",
+        "message": "Dockerfile uses :latest tag — non-reproducible builds.",
+        "fix_hint": "Pin to a specific version: FROM node:20.11.1-alpine3.19",
+        "extensions": {".dockerfile", ""},
+        "flags": re.MULTILINE,
+        "filename_pattern": r"^[Dd]ockerfile",
+    },
+    {
+        "rule_id": "INFRA_DOCKER_ADD_URL",
+        "severity": "medium",
+        "category": "container-security",
+        "cwe": None,
+        "pattern": r"^\s*ADD\s+https?://",
+        "message": "Dockerfile ADD from URL — no checksum verification.",
+        "fix_hint": "Use RUN curl with --fail and a pinned checksum, then COPY.",
+        "extensions": {".dockerfile", ""},
+        "flags": re.MULTILINE,
+        "filename_pattern": r"^[Dd]ockerfile",
+    },
+    {
+        "rule_id": "INFRA_K8S_PRIVILEGED",
+        "severity": "critical",
+        "category": "container-security",
+        "cwe": "CWE-250",
+        "pattern": r"privileged\s*:\s*true",
+        "message": "Kubernetes container running as privileged — effectively root on the node.",
+        "fix_hint": "Set privileged: false. Use specific capabilities with capabilities.add if needed.",
+        "extensions": {".yaml", ".yml"},
+        "flags": 0,
+    },
+    {
+        "rule_id": "INFRA_K8S_HOST_NETWORK",
+        "severity": "high",
+        "category": "container-security",
+        "cwe": "CWE-284",
+        "pattern": r"hostNetwork\s*:\s*true",
+        "message": "Kubernetes pod using hostNetwork: true — bypasses network isolation.",
+        "fix_hint": "Remove hostNetwork: true unless absolutely required.",
+        "extensions": {".yaml", ".yml"},
+        "flags": 0,
+    },
+    {
+        "rule_id": "INFRA_K8S_RUN_AS_ROOT",
+        "severity": "high",
+        "category": "container-security",
+        "cwe": "CWE-250",
+        "pattern": r"runAsUser\s*:\s*0\b",
+        "message": "Kubernetes container configured to run as UID 0 (root).",
+        "fix_hint": "Set runAsNonRoot: true and specify a non-zero runAsUser.",
+        "extensions": {".yaml", ".yml"},
+        "flags": 0,
+    },
+    {
+        "rule_id": "INFRA_TF_S3_PUBLIC",
+        "severity": "critical",
+        "category": "cloud-misconfiguration",
+        "cwe": "CWE-732",
+        "pattern": r'acl\s*=\s*"public-read(?:-write)?"',
+        "message": "Terraform S3 bucket with public ACL.",
+        "fix_hint": 'Use acl = "private" and configure explicit bucket policies.',
+        "extensions": {".tf"},
+        "flags": 0,
+    },
+    {
+        "rule_id": "INFRA_TF_SG_OPEN",
+        "severity": "critical",
+        "category": "cloud-misconfiguration",
+        "cwe": "CWE-732",
+        "pattern": r'cidr_blocks\s*=\s*\[\s*"0\.0\.0\.0/0"\s*\]',
+        "message": "Terraform security group open to 0.0.0.0/0 — verify sensitive ports are not exposed.",
+        "fix_hint": "Restrict to specific IP ranges or use VPN/bastion.",
+        "extensions": {".tf"},
+        "flags": 0,
+    },
+    {
+        "rule_id": "INFRA_TF_IAM_WILDCARD",
+        "severity": "critical",
+        "category": "cloud-misconfiguration",
+        "cwe": "CWE-732",
+        "pattern": r'"Action"\s*:\s*"\*"',
+        "message": "IAM policy with wildcard Action — over-permissive.",
+        "fix_hint": "Apply least privilege: specify exact actions and resource ARNs.",
+        "extensions": {".tf", ".json"},
+        "flags": 0,
+    },
+    {
+        "rule_id": "INFRA_GHA_PULL_REQUEST_TARGET",
+        "severity": "critical",
+        "category": "ci-cd",
+        "cwe": "CWE-829",
+        "pattern": r"on:\s*pull_request_target",
+        "message": "GitHub Actions pull_request_target — fork PR code may run with repo secrets.",
+        "fix_hint": "Do not checkout PR code in pull_request_target, or use a two-workflow pattern.",
+        "extensions": {".yml", ".yaml"},
+        "flags": 0,
+    },
+    {
+        "rule_id": "INFRA_GHA_UNQUOTED_EXPR",
+        "severity": "high",
+        "category": "ci-cd",
+        "cwe": "CWE-78",
+        "pattern": r"run:.*\$\{\{\s*github\.event\.(pull_request\.|issue\.)",
+        "message": "GitHub Actions run step uses unquoted github.event expression — command injection risk.",
+        "fix_hint": "Assign to an env var first, then reference as $ENV_VAR in the run step.",
+        "extensions": {".yml", ".yaml"},
+        "flags": 0,
+    },
+    # ── DEBUG / GENERAL ────────────────────────────────────────────────────────
+    {  # codesec-ignore: GENERAL_TODO_SECURITY
+        "rule_id": "GENERAL_TODO_SECURITY",
+        "severity": "info",
+        "category": "todo",
+        "cwe": None,  # codesec-ignore: GENERAL_TODO_SECURITY
+        "pattern": r"(?i)(?:TODO|FIXME|HACK)\s*:?\s*(?:.*?(?:security|auth|authz|authn|inject|xss|sqli|csrf|vuln|pentest|fix))",
+        "message": "TODO/FIXME referencing security concern.",  # codesec-ignore: GENERAL_TODO_SECURITY
+        "fix_hint": "Resolve this security-related TODO before shipping.",  # codesec-ignore: GENERAL_TODO_SECURITY
+        "extensions": None,
+        "flags": re.IGNORECASE,
+    },
+    {
+        "rule_id": "GENERAL_LOCALHOST_IN_PROD",
+        "severity": "info",
+        "category": "configuration",
+        "cwe": None,
+        "pattern": r"https?://(?:localhost|127\.0\.0\.1|0\.0\.0\.0)(?::\d+)?",
+        "message": "Localhost URL found in non-test source file.",
+        "fix_hint": "Ensure this is not present in production configuration.",
+        "extensions": None,
+        "flags": 0,
+    },
+]
+
+
+def is_test_file(path: Path) -> bool:
+    """Heuristic: is this file a test or fixture?"""
+    parts = set(p.lower() for p in path.parts)
+    for pattern in TEST_PATH_PATTERNS:
+        if pattern in parts:
+            return True
+    name = path.stem.lower()
+    return (name.endswith("_test") or name.endswith(".test") or
+            name.endswith("_spec") or name.endswith(".spec") or
+            name.startswith("test_") or name.startswith("fixture"))
+
+
+def should_skip_dir(name: str) -> bool:
+    return name in SKIP_DIRS or name.startswith(".") and name not in {".github", ".gitlab"}
+
+
+def read_gitignore(base: Path):
+    """Return a list of gitignore patterns (best-effort)."""
+    patterns = []
+    gi = base / ".gitignore"
+    if gi.exists():
+        try:
+            for line in gi.read_text(errors="ignore").splitlines():
+                line = line.strip()
+                if line and not line.startswith("#"):
+                    patterns.append(line)
+        except Exception:
+            pass
+    return patterns
+
+
+def matches_gitignore(rel: str, patterns: List[str]) -> bool:
+    for pat in patterns:
+        if fnmatch.fnmatch(rel, pat) or fnmatch.fnmatch(os.path.basename(rel), pat):
+            return True
+    return False
+
+
+def walk_files(base: Path, include_glob: Optional[str], exclude_glob: Optional[str],
+               gitignore_patterns: List[str]) -> Generator[Path, None, None]:
+    for root, dirs, files in os.walk(base):
+        root_path = Path(root)
+        dirs[:] = [d for d in dirs if not should_skip_dir(d)]
+
+        for fname in files:
+            fpath = root_path / fname
+            ext = fpath.suffix.lower()
+            if ext in SKIP_EXTENSIONS:
+                continue
+            rel = str(fpath.relative_to(base))
+            if matches_gitignore(rel, gitignore_patterns):
+                continue
+            if include_glob and not fnmatch.fnmatch(rel, include_glob):
+                continue
+            if exclude_glob and fnmatch.fnmatch(rel, exclude_glob):
+                continue
+            yield fpath
+
+
+def has_inline_ignore(line: str, rule_id: str) -> bool:
+    """Check for codesec-ignore: <rule_id> inline comment.
+
+    Supports single IDs and comma-separated lists:
+      # codesec-ignore: RULE_A
+      # codesec-ignore: RULE_A,RULE_B,RULE_C
+    """
+    if "codesec-ignore-all" in line:
+        return True
+    # Extract everything after "codesec-ignore:" and check the list
+    for prefix in ("codesec-ignore: ", "codesec-ignore:"):
+        idx = line.find(prefix)
+        if idx != -1:
+            rest = line[idx + len(prefix):]
+            # Strip trailing comment/whitespace and split by comma
+            ids = [r.strip().rstrip(" -->").strip() for r in rest.split(",")]
+            if rule_id in ids:
+                return True
+    return False
+
+
+def scan_file(fpath: Path, rules: List[Dict], quick: bool,
+              min_severity: str) -> List[Dict]:
+    findings = []
+    min_order = SEV_ORDER.get(min_severity, 4)
+
+    try:
+        content = fpath.read_text(errors="ignore")
+    except Exception:
+        return findings
+
+    lines = content.splitlines()
+    is_test = is_test_file(fpath)
+    ext = fpath.suffix.lower()
+    fname = fpath.name
+
+    for rule in rules:
+        rule_id = rule["rule_id"]
+        sev = rule["severity"]
+
+        if SEV_ORDER.get(sev, 4) > min_order:
+            continue
+
+        # Skip test-specific relaxations
+        if is_test and rule_id in {
+            "BACKEND_PYTHON_EVAL", "WEB_EVAL", "BACKEND_PYTHON_EXEC",
+            "BACKEND_PYTHON_FLASK_DEBUG", "BACKEND_PYTHON_DJANGO_DEBUG",
+            "GENERAL_LOCALHOST_IN_PROD",
+        }:
+            continue
+
+        # Quick mode: only secrets, eval/exec, SQLi, CMDi
+        if quick and rule["category"] not in {
+            "secrets", "code-injection", "command-injection", "sql-injection",
+        }:
+            continue
+
+        # Extension filter
+        rule_exts = rule.get("extensions")
+        filename_pattern = rule.get("filename_pattern")
+
+        if rule_exts is not None:
+            # Check both extension and optional filename_pattern
+            ext_match = ext in rule_exts or "" in rule_exts
+            fname_match = filename_pattern and re.search(filename_pattern, fname)
+            if not ext_match and not fname_match:
+                continue
+
+        try:
+            compiled = re.compile(rule["pattern"], rule.get("flags", 0))
+        except re.error:
+            continue
+
+        for lineno, line in enumerate(lines, 1):
+            # Check current line AND the preceding line for a codesec-ignore comment
+            prev_line = lines[lineno - 2] if lineno >= 2 else ""
+            if has_inline_ignore(line, rule_id) or has_inline_ignore(prev_line, rule_id):
+                continue
+            m = compiled.search(line)
+            if m:
+                # Skip Stripe publishable keys for OpenAI rule
+                if rule_id == "SECRETS_OPENAI_KEY":
+                    if "pk_live_" in line or "pk_test_" in line:
+                        continue
+                    if is_test:
+                        continue
+                findings.append({
+                    "rule_id": rule_id,
+                    "severity": sev,
+                    "category": rule["category"],
+                    "cwe": rule.get("cwe"),
+                    "file": str(fpath),
+                    "line": lineno,
+                    "column": m.start() + 1,
+                    "snippet": line.strip()[:200],
+                    "message": rule["message"],
+                    "fix_hint": rule["fix_hint"],
+                })
+
+    return findings
+
+
+def run_dep_audit(base: Path) -> List[Dict]:
+    results = []
+    timeout = 30
+
+    def run(cmd, **kwargs):
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout, **kwargs)
+            return r.stdout, r.returncode
+        except (subprocess.TimeoutExpired, FileNotFoundError, PermissionError):
+            return None, -1
+
+    # npm audit
+    if (base / "package.json").exists() and (base / "node_modules").exists():
+        out, code = run(["npm", "audit", "--json"], cwd=base)
+        if out:
+            try:
+                data = json.loads(out)
+                vulns = data.get("vulnerabilities", {})
+                for pkg, info in vulns.items():
+                    sev = info.get("severity", "unknown").lower()
+                    if sev in ("critical", "high"):
+                        results.append({
+                            "rule_id": "DEP_NPM_VULN",
+                            "severity": sev,
+                            "category": "dependency",
+                            "cwe": "CWE-1395",
+                            "file": str(base / "package.json"),
+                            "line": 1,
+                            "column": 1,
+                            "snippet": f"{pkg}@{info.get('range', '?')}",
+                            "message": f"npm vulnerability in {pkg}: {info.get('title', info.get('name', ''))}",
+                            "fix_hint": f"Run: npm audit fix. Fixed in: {info.get('fixAvailable', {}).get('version', 'check npm advisory')}",
+                        })
+            except (json.JSONDecodeError, KeyError):
+                pass
+
+    # pip-audit
+    if any((base / f).exists() for f in ["requirements.txt", "pyproject.toml", "setup.py"]):
+        out, code = run(["pip-audit", "--format", "json"])
+        if out:
+            try:
+                data = json.loads(out)
+                for dep in data.get("dependencies", []):
+                    for vuln in dep.get("vulns", []):
+                        results.append({
+                            "rule_id": "DEP_PIP_VULN",
+                            "severity": "high",
+                            "category": "dependency",
+                            "cwe": "CWE-1395",
+                            "file": str(base / "requirements.txt"),
+                            "line": 1,
+                            "column": 1,
+                            "snippet": f"{dep.get('name')}=={dep.get('version')}",
+                            "message": f"Python vulnerability: {vuln.get('id')} in {dep.get('name')}",
+                            "fix_hint": f"Upgrade to {vuln.get('fix_versions', ['?'])[0]} or later.",
+                        })
+            except (json.JSONDecodeError, KeyError):
+                pass
+
+    # cargo audit
+    if (base / "Cargo.toml").exists():
+        out, code = run(["cargo", "audit", "--json"], cwd=base)
+        if out:
+            try:
+                data = json.loads(out)
+                for vuln in data.get("vulnerabilities", {}).get("list", []):
+                    results.append({
+                        "rule_id": "DEP_CARGO_VULN",
+                        "severity": "high",
+                        "category": "dependency",
+                        "cwe": "CWE-1395",
+                        "file": str(base / "Cargo.toml"),
+                        "line": 1,
+                        "column": 1,
+                        "snippet": f"{vuln.get('package', {}).get('name')}",
+                        "message": f"Rust advisory {vuln.get('advisory', {}).get('id')}: {vuln.get('advisory', {}).get('title')}",
+                        "fix_hint": f"Upgrade to patched version. See: {vuln.get('advisory', {}).get('url')}",
+                    })
+            except (json.JSONDecodeError, KeyError):
+                pass
+
+    return results
+
+
+def print_human(findings: List[Dict], path: str, elapsed: float):
+    if not findings:
+        print(f"{BOLD}✓ No findings in {path}{RESET} ({elapsed:.2f}s)")
+        return
+
+    by_sev = {}
+    for f in findings:
+        by_sev.setdefault(f["severity"], []).append(f)
+
+    total = len(findings)
+    summary_parts = []
+    for sev in ["critical", "high", "medium", "low", "info"]:
+        count = len(by_sev.get(sev, []))
+        if count:
+            color = SEV_COLOR.get(sev, "")
+            summary_parts.append(f"{color}{count} {sev}{RESET}")
+    print(f"\n{BOLD}Security Scan — {path}{RESET} ({elapsed:.2f}s)")
+    print(f"Found {total} finding(s): " + ", ".join(summary_parts))
+    print()
+
+    for sev in ["critical", "high", "medium", "low", "info"]:
+        sev_findings = by_sev.get(sev, [])
+        if not sev_findings:
+            continue
+        color = SEV_COLOR.get(sev, "")
+        label = sev.upper()
+        print(f"{color}{'━' * 60}")
+        print(f"  {label} ({len(sev_findings)} finding(s)){RESET}")
+        print()
+        for i, f in enumerate(sev_findings, 1):
+            cwe = f.get("cwe") or ""
+            print(f"  {color}[{i}] {f['rule_id']}{RESET} {cwe}")
+            print(f"      {f['file']}:{f['line']}")
+            print(f"      {f['message']}")
+            if f.get("snippet"):
+                print(f"      {CYAN}→ {f['snippet'][:120]}{RESET}")
+            print(f"      Fix: {f['fix_hint']}")
+            print()
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="codesec-scan — Code Security Guardian scanner",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--path", default=".", help="Directory or file to scan")
+    parser.add_argument("--json", action="store_true", dest="json_output",
+                        help="Output findings as JSON array")
+    parser.add_argument("--quick", action="store_true",
+                        help="Quick mode: secrets + code/command/SQL injection only")
+    parser.add_argument("--include", metavar="GLOB", help="Only scan files matching this glob")
+    parser.add_argument("--exclude", metavar="GLOB", help="Skip files matching this glob")
+    parser.add_argument("--no-deps", action="store_true", help="Skip dependency audit")
+    parser.add_argument("--severity", default="info",
+                        choices=["critical", "high", "medium", "low", "info"],
+                        help="Minimum severity to report (default: info)")
+    parser.add_argument("--list-rules", action="store_true",
+                        help="Print all rule IDs grouped by category and exit")
+    args = parser.parse_args()
+
+    if args.list_rules:
+        from collections import defaultdict
+        by_cat = defaultdict(list)
+        for r in RULES:
+            by_cat[r["category"]].append(r)
+        for cat, rules in sorted(by_cat.items()):
+            print(f"\n{BOLD}{cat.upper()}{RESET}")
+            for r in sorted(rules, key=lambda x: SEV_ORDER.get(x["severity"], 4)):
+                sev = r["severity"]
+                color = SEV_COLOR.get(sev, "")
+                print(f"  {color}{r['rule_id']:<50}{RESET}  {sev}")
+        return
+
+    target = Path(args.path).resolve()
+    start = time.time()
+
+    all_findings: List[Dict] = []
+
+    if target.is_file():
+        all_findings = scan_file(target, RULES, args.quick, args.severity)
+    elif target.is_dir():
+        gi_patterns = read_gitignore(target)
+        file_count = 0
+        for fpath in walk_files(target, args.include, args.exclude, gi_patterns):
+            findings = scan_file(fpath, RULES, args.quick, args.severity)
+            all_findings.extend(findings)
+            file_count += 1
+
+        if not args.quick and not args.no_deps:
+            dep_findings = run_dep_audit(target)
+            # Filter dep findings by min severity
+            min_ord = SEV_ORDER.get(args.severity, 4)
+            dep_findings = [f for f in dep_findings
+                            if SEV_ORDER.get(f["severity"], 4) <= min_ord]
+            all_findings.extend(dep_findings)
+    else:
+        print(f"Error: {target} does not exist.", file=sys.stderr)
+        sys.exit(1)
+
+    elapsed = time.time() - start
+
+    # Sort by severity then file
+    all_findings.sort(key=lambda f: (SEV_ORDER.get(f["severity"], 4), f["file"], f["line"]))
+
+    if args.json_output:
+        print(json.dumps(all_findings, indent=2))
+    else:
+        print_human(all_findings, str(target), elapsed)
+
+    # Exit codes
+    severities = {f["severity"] for f in all_findings}
+    if "critical" in severities:
+        sys.exit(3)
+    elif "high" in severities:
+        sys.exit(2)
+    elif "medium" in severities:
+        sys.exit(1)
+    else:
+        sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()

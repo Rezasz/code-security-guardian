@@ -1,0 +1,777 @@
+#!/usr/bin/env python3
+"""
+codesec-rules — Rule management CLI for Code Security Guardian
+Stdlib only, Python 3.8+. Author: kanz.ai <reza@kanz.ai>
+"""
+
+import argparse
+import fnmatch
+import hashlib
+import json
+import os
+import re
+import sys
+import urllib.request
+import urllib.error
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+# ─── Minimal YAML subset parser (stdlib only) ─────────────────────────────────
+# Supports: mappings, sequences, scalar strings/ints/bools/null, block style.
+# Does NOT support: anchors, tags, flow collections, multi-line strings.
+
+class _YAMLParseError(Exception):
+    pass
+
+def _yaml_loads(text: str) -> Any:
+    """
+    Parse a strict subset of YAML sufficient for our rule files.
+    Supported subset:
+      - Top-level mapping
+      - Nested mappings and sequences (block style, 2-space indent)
+      - Scalar: quoted strings, unquoted strings, integers, true/false, null
+      - Comments (#)
+    """
+    lines = text.splitlines()
+    pos = [0]  # mutable so inner functions can advance it
+
+    def peek():
+        while pos[0] < len(lines):
+            line = lines[pos[0]]
+            stripped = line.rstrip()
+            if stripped == '' or stripped.lstrip().startswith('#'):
+                pos[0] += 1
+                continue
+            return stripped
+        return None
+
+    def indent_of(line: str) -> int:
+        return len(line) - len(line.lstrip())
+
+    def parse_scalar(s: str) -> Any:
+        s = s.strip()
+        if not s or s == 'null' or s == '~':
+            return None
+        if s == 'true':
+            return True
+        if s == 'false':
+            return False
+        if re.match(r'^-?\d+$', s):
+            return int(s)
+        if re.match(r'^-?\d+\.\d+$', s):
+            return float(s)
+        # Quoted string
+        if (s.startswith('"') and s.endswith('"')) or \
+           (s.startswith("'") and s.endswith("'")):
+            return s[1:-1]
+        return s
+
+    def parse_value(line: str, base_indent: int) -> Any:
+        """Parse value starting on this line, consuming following lines if block."""
+        stripped = line.strip()
+
+        # Inline list
+        if stripped.startswith('['):
+            inner = stripped[1:].rstrip(']').strip()
+            if not inner:
+                return []
+            items = []
+            for item in inner.split(','):
+                items.append(parse_scalar(item.strip()))
+            return items
+
+        # Inline mapping
+        if stripped.startswith('{'):
+            return {}  # Not supported inline, return empty
+
+        # Scalar (non-empty)
+        if stripped and not stripped.endswith(':'):
+            return parse_scalar(stripped)
+
+        return None
+
+    def parse_block(min_indent: int) -> Any:
+        """Parse a block of YAML at min_indent level."""
+        line = peek()
+        if line is None:
+            return None
+
+        curr_indent = indent_of(line)
+        if curr_indent < min_indent:
+            return None
+
+        # Determine if this is a sequence or mapping
+        stripped = line.lstrip()
+        if stripped.startswith('- ') or stripped == '-':
+            return parse_sequence(curr_indent)
+        else:
+            return parse_mapping(curr_indent)
+
+    def parse_sequence(seq_indent: int) -> List:
+        result = []
+        while True:
+            line = peek()
+            if line is None:
+                break
+            curr_indent = indent_of(line)
+            if curr_indent < seq_indent:
+                break
+            stripped = line.lstrip()
+            if not stripped.startswith('-'):
+                break
+            pos[0] += 1
+            item_str = stripped[1:].strip()
+            if not item_str:
+                # Block item on next line
+                child = parse_block(curr_indent + 2)
+                result.append(child if child is not None else {})
+            elif ':' in item_str and not item_str.startswith('"') and not item_str.startswith("'"):
+                # Inline mapping item
+                child_map = {}
+                # Parse inline key: value
+                colon_pos = item_str.index(':')
+                key = item_str[:colon_pos].strip()
+                val_str = item_str[colon_pos+1:].strip()
+                if val_str:
+                    child_map[key] = parse_scalar(val_str)
+                else:
+                    child_map[key] = parse_block(curr_indent + 2)
+                # Continue parsing more keys at same block level
+                result.append(child_map)
+                # Parse remaining keys of this mapping item
+                while True:
+                    next_line = peek()
+                    if next_line is None:
+                        break
+                    ni = indent_of(next_line)
+                    if ni <= curr_indent:
+                        break
+                    ns = next_line.lstrip()
+                    if ns.startswith('-'):
+                        break
+                    if ':' in ns:
+                        pos[0] += 1
+                        ci = ns.index(':')
+                        k = ns[:ci].strip()
+                        v = ns[ci+1:].strip()
+                        if v:
+                            child_map[k] = parse_scalar(v)
+                        else:
+                            child_map[k] = parse_block(ni + 2)
+                    else:
+                        pos[0] += 1
+            else:
+                result.append(parse_scalar(item_str))
+        return result
+
+    def parse_mapping(map_indent: int) -> Dict:
+        result = {}
+        while True:
+            line = peek()
+            if line is None:
+                break
+            curr_indent = indent_of(line)
+            if curr_indent < map_indent:
+                break
+            stripped = line.lstrip()
+            if stripped.startswith('- ') or stripped == '-':
+                break
+            if ':' not in stripped:
+                pos[0] += 1
+                continue
+            pos[0] += 1
+            # Handle quoted keys
+            colon_pos = -1
+            if stripped.startswith('"'):
+                end = stripped.index('"', 1)
+                key = stripped[1:end]
+                rest = stripped[end+1:].lstrip()
+                if rest.startswith(':'):
+                    colon_pos = 0
+                    val_str = rest[1:].strip()
+                else:
+                    continue
+            elif stripped.startswith("'"):
+                end = stripped.index("'", 1)
+                key = stripped[1:end]
+                rest = stripped[end+1:].lstrip()
+                if rest.startswith(':'):
+                    colon_pos = 0
+                    val_str = rest[1:].strip()
+                else:
+                    continue
+            else:
+                colon_pos = stripped.index(':')
+                key = stripped[:colon_pos].strip()
+                val_str = stripped[colon_pos+1:].strip()
+
+            if val_str:
+                result[key] = parse_value(val_str, curr_indent)
+            else:
+                child = parse_block(curr_indent + 2)
+                result[key] = child if child is not None else None
+        return result
+
+    result = parse_block(0)
+    return result if result is not None else {}
+
+
+def yaml_loads(text: str) -> Any:
+    """Load YAML with PyYAML if available, else fall back to minimal parser."""
+    try:
+        import yaml
+        return yaml.safe_load(text)
+    except ImportError:
+        return _yaml_loads(text)
+
+
+def yaml_dumps_list(items: List[Dict]) -> str:
+    """Serialize a list of rule dicts back to YAML (simple, stdlib-only)."""
+    lines = ["rules:"]
+    for rule in items:
+        lines.append("  - id: " + str(rule.get("id", "")))
+        for k, v in rule.items():
+            if k == "id":
+                continue
+            if v is None:
+                lines.append(f"    {k}: null")
+            elif isinstance(v, bool):
+                lines.append(f"    {k}: {'true' if v else 'false'}")
+            elif isinstance(v, list):
+                if not v:
+                    lines.append(f"    {k}: []")
+                else:
+                    lines.append(f"    {k}:")
+                    for item in v:
+                        lines.append(f"      - {item}")
+            elif isinstance(v, str) and any(c in v for c in ':[]{},#&*?|>!\'"\\'):
+                escaped = v.replace("'", "\\'")
+                lines.append(f"    {k}: '{escaped}'")
+            else:
+                lines.append(f"    {k}: {v}")
+        lines.append("")
+    return "\n".join(lines)
+
+
+# ─── Plugin root detection ─────────────────────────────────────────────────────
+def plugin_root() -> Path:
+    env = os.environ.get("CLAUDE_PLUGIN_ROOT")
+    if env:
+        return Path(env)
+    # Walk up from this script's location
+    p = Path(__file__).resolve().parent.parent
+    if (p / ".claude-plugin" / "plugin.json").exists():
+        return p
+    return Path.cwd()
+
+
+ROOT = plugin_root()
+RULES_CORE = ROOT / "rules" / "core"
+RULES_COMMUNITY = ROOT / "rules" / "community"
+RULES_LOCAL = ROOT / "rules" / "local"
+CONFIG_FILE = ROOT / "config" / "settings.yaml"
+
+SEV_ORDER = {"critical": 0, "high": 1, "medium": 2, "low": 3, "info": 4}
+
+ANSI = not (os.environ.get("NO_COLOR") or not sys.stdout.isatty())
+BOLD  = "\033[1m" if ANSI else ""
+RED   = "\033[31m" if ANSI else ""
+ORANGE= "\033[33m" if ANSI else ""
+YELLOW= "\033[93m" if ANSI else ""
+BLUE  = "\033[34m" if ANSI else ""
+CYAN  = "\033[36m" if ANSI else ""
+RESET = "\033[0m" if ANSI else ""
+
+SEV_COLOR = {"critical": RED+BOLD, "high": ORANGE+BOLD, "medium": YELLOW, "low": BLUE, "info": CYAN}
+
+
+# ─── Rule loading ──────────────────────────────────────────────────────────────
+
+def load_rules_from_dir(directory: Path, source_label: str) -> List[Dict]:
+    rules = []
+    if not directory.exists():
+        return rules
+    for yaml_file in sorted(directory.glob("*.yaml")):
+        try:
+            data = yaml_loads(yaml_file.read_text(errors="ignore"))
+            if isinstance(data, dict) and "rules" in data:
+                for rule in data["rules"]:
+                    if isinstance(rule, dict):
+                        rule.setdefault("source", source_label)
+                        rule.setdefault("_file", str(yaml_file))
+                        rules.append(rule)
+        except Exception as e:
+            print(f"Warning: could not load {yaml_file}: {e}", file=sys.stderr)
+    return rules
+
+
+def load_all_rules() -> List[Dict]:
+    """Load core → community → local, with later layers overriding by id."""
+    merged: Dict[str, Dict] = {}
+    for rules, label in [
+        (load_rules_from_dir(RULES_CORE, "core"), "core"),
+        (load_rules_from_dir(RULES_COMMUNITY, "community"), "community"),
+        (load_rules_from_dir(RULES_LOCAL, "local"), "local"),
+    ]:
+        for rule in rules:
+            rid = rule.get("id")
+            if rid:
+                merged[rid] = rule
+    return list(merged.values())
+
+
+def load_config() -> Dict:
+    if CONFIG_FILE.exists():
+        try:
+            return yaml_loads(CONFIG_FILE.read_text(errors="ignore")) or {}
+        except Exception:
+            pass
+    return {}
+
+
+# ─── Validation ───────────────────────────────────────────────────────────────
+
+REQUIRED_FIELDS = {"id", "severity", "category", "pattern", "message", "fix_hint"}
+VALID_SEVERITIES = {"critical", "high", "medium", "low", "info"}
+VALID_SOURCES = {"core", "community", "community-proposal", "local"}
+
+
+def validate_rule(rule: Dict) -> List[str]:
+    errors = []
+    for f in REQUIRED_FIELDS:
+        if f not in rule or rule[f] is None:
+            errors.append(f"Missing required field: {f}")
+    if rule.get("severity") and rule["severity"] not in VALID_SEVERITIES:
+        errors.append(f"Invalid severity: {rule['severity']}")
+    if rule.get("pattern"):
+        try:
+            flags = 0
+            for flag_name in (rule.get("pattern_flags") or []):
+                flags |= getattr(re, flag_name, 0)
+            re.compile(rule["pattern"], flags)
+        except re.error as e:
+            errors.append(f"Invalid regex pattern: {e}")
+    if not rule.get("false_positive_hints"):
+        errors.append("Warning: no false_positive_hints — consider adding at least one")
+    if not rule.get("cwe"):
+        errors.append("Warning: no CWE mapping")
+    return errors
+
+
+def validate_rule_file(path: Path) -> List[tuple]:
+    """Returns list of (rule_id, errors)."""
+    try:
+        data = yaml_loads(path.read_text(errors="ignore"))
+    except Exception as e:
+        return [("(parse)", [f"YAML parse error: {e}"])]
+    if not isinstance(data, dict) or "rules" not in data:
+        return [("(structure)", ["File must have a top-level 'rules:' key"])]
+    results = []
+    for rule in (data["rules"] or []):
+        if not isinstance(rule, dict):
+            results.append(("?", ["Rule must be a mapping"]))
+            continue
+        rid = rule.get("id", "?")
+        errs = validate_rule(rule)
+        if errs:
+            results.append((rid, errs))
+    return results
+
+
+# ─── Local override helpers ────────────────────────────────────────────────────
+
+def write_local_override(rule_id: str, changes: Dict):
+    """Write or update a rule override in rules/local/overrides.yaml."""
+    RULES_LOCAL.mkdir(parents=True, exist_ok=True)
+    override_file = RULES_LOCAL / "overrides.yaml"
+    existing = []
+    if override_file.exists():
+        data = yaml_loads(override_file.read_text(errors="ignore")) or {}
+        existing = data.get("rules", [])
+    # Update or append
+    found = False
+    for rule in existing:
+        if isinstance(rule, dict) and rule.get("id") == rule_id:
+            rule.update(changes)
+            found = True
+            break
+    if not found:
+        new_rule = {"id": rule_id}
+        new_rule.update(changes)
+        existing.append(new_rule)
+    override_file.write_text("rules:\n" + _serialize_rules_yaml(existing))
+    print(f"Written override to {override_file}")
+
+
+def _serialize_rules_yaml(rules: List[Dict]) -> str:
+    lines = []
+    for r in rules:
+        first = True
+        for k, v in r.items():
+            prefix = "  - " if first else "    "
+            first = False
+            if v is None:
+                lines.append(f"{prefix}{k}: null")
+            elif isinstance(v, bool):
+                lines.append(f"{prefix}{k}: {'true' if v else 'false'}")
+            elif isinstance(v, list):
+                lines.append(f"{prefix}{k}: [{', '.join(str(i) for i in v)}]")
+            elif isinstance(v, str) and ("'" in v or '"' in v or ':' in v):
+                safe = v.replace('"', '\\"')
+                lines.append(f'{prefix}{k}: "{safe}"')
+            else:
+                lines.append(f"{prefix}{k}: {v}")
+    return "\n".join(lines) + "\n"
+
+
+# ─── Sync ─────────────────────────────────────────────────────────────────────
+
+def cmd_sync(args):
+    config = load_config()
+    url = (config.get("research") or {}).get(
+        "community_rules_url",
+        "https://raw.githubusercontent.com/kanz-ai/codesec-rules/main/manifest.json"
+    )
+    timeout = (config.get("research") or {}).get("fetch_timeout_seconds", 30)
+    print(f"Fetching community rules manifest from {url}...")
+    try:
+        req = urllib.request.Request(url, headers={"User-Agent": "codesec-rules/0.1.0"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            manifest = json.loads(resp.read().decode())
+    except urllib.error.URLError as e:
+        print(f"Error: Could not fetch manifest — {e}", file=sys.stderr)
+        print("Offline mode: community rules not updated.", file=sys.stderr)
+        sys.exit(1)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    packs = manifest.get("rule_packs", [])
+    if not packs:
+        print("Manifest is empty or has no rule_packs. Nothing to sync.")
+        return
+
+    RULES_COMMUNITY.mkdir(parents=True, exist_ok=True)
+    updated = 0
+    for pack in packs:
+        pack_url = pack.get("url")
+        pack_name = pack.get("name", "unknown")
+        if not pack_url:
+            continue
+        try:
+            req = urllib.request.Request(pack_url, headers={"User-Agent": "codesec-rules/0.1.0"})
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                content = resp.read().decode()
+            out_file = RULES_COMMUNITY / f"{pack_name}.yaml"
+            out_file.write_text(content)
+            print(f"  ✓ {pack_name}")
+            updated += 1
+        except Exception as e:
+            print(f"  ✗ {pack_name}: {e}")
+
+    print(f"\nSync complete. {updated}/{len(packs)} rule packs updated.")
+
+
+# ─── Commands ─────────────────────────────────────────────────────────────────
+
+def cmd_list(args):
+    all_rules = load_all_rules()
+    filtered = all_rules
+
+    if args.category:
+        filtered = [r for r in filtered if r.get("category") == args.category]
+    if args.severity:
+        filtered = [r for r in filtered if r.get("severity") == args.severity]
+    if args.source:
+        filtered = [r for r in filtered if r.get("source", "").startswith(args.source)]
+
+    filtered.sort(key=lambda r: (SEV_ORDER.get(r.get("severity", "info"), 4), r.get("id", "")))
+
+    if not filtered:
+        print("No rules match the given filters.")
+        return
+
+    print(f"\n{'ID':<50} {'SEV':<10} {'CAT':<25} {'SOURCE':<12} {'ENABLED'}")
+    print("─" * 110)
+    for r in filtered:
+        rid = r.get("id", "?")[:49]
+        sev = r.get("severity", "?")
+        cat = r.get("category", "?")[:24]
+        src = r.get("source", "?")[:11]
+        enabled = "yes" if r.get("enabled", True) else "NO"
+        color = SEV_COLOR.get(sev, "")
+        print(f"{color}{rid:<50}{RESET} {sev:<10} {cat:<25} {src:<12} {enabled}")
+
+    print(f"\nTotal: {len(filtered)} rules")
+
+
+def cmd_show(args):
+    all_rules = load_all_rules()
+    rule = next((r for r in all_rules if r.get("id") == args.rule_id), None)
+    if not rule:
+        print(f"Rule '{args.rule_id}' not found.", file=sys.stderr)
+        sys.exit(1)
+
+    sev = rule.get("severity", "?")
+    color = SEV_COLOR.get(sev, "")
+    print(f"\n{BOLD}{rule['id']}{RESET}")
+    print(f"  Severity:  {color}{sev}{RESET}")
+    print(f"  Category:  {rule.get('category', '?')}")
+    print(f"  CWE:       {rule.get('cwe') or 'N/A'}")
+    print(f"  Source:    {rule.get('source', '?')}")
+    print(f"  File:      {rule.get('_file', 'N/A')}")
+    print(f"  Enabled:   {'yes' if rule.get('enabled', True) else 'NO'}")
+    print(f"  Confidence:{rule.get('confidence', 'N/A')}")
+    print(f"\n  Pattern:   {rule.get('pattern', '')}")
+    print(f"  Flags:     {rule.get('pattern_flags', [])}")
+    print(f"  Message:   {rule.get('message', '')}")
+    print(f"  Fix:       {rule.get('fix_hint', '')}")
+
+    fps = rule.get("false_positive_hints", [])
+    if fps:
+        print(f"\n  False positive hints:")
+        for fp in fps:
+            print(f"    - {fp}")
+
+    refs = rule.get("references", [])
+    if refs:
+        print(f"\n  References:")
+        for ref in refs:
+            print(f"    {ref}")
+
+
+def cmd_disable(args):
+    all_rules = load_all_rules()
+    rule = next((r for r in all_rules if r.get("id") == args.rule_id), None)
+    if not rule:
+        print(f"Rule '{args.rule_id}' not found.", file=sys.stderr)
+        sys.exit(1)
+    write_local_override(args.rule_id, {"enabled": False})
+    print(f"Rule '{args.rule_id}' disabled (override written to rules/local/overrides.yaml).")
+
+
+def cmd_enable(args):
+    all_rules = load_all_rules()
+    rule = next((r for r in all_rules if r.get("id") == args.rule_id), None)
+    if not rule:
+        print(f"Rule '{args.rule_id}' not found.", file=sys.stderr)
+        sys.exit(1)
+    write_local_override(args.rule_id, {"enabled": True})
+    print(f"Rule '{args.rule_id}' enabled.")
+
+
+def cmd_add(args):
+    src_file = Path(args.yaml_file)
+    if not src_file.exists():
+        print(f"File not found: {src_file}", file=sys.stderr)
+        sys.exit(1)
+    issues = validate_rule_file(src_file)
+    errors = [(rid, errs) for rid, errs in issues if any("Error:" in e or "Missing" in e for e in errs)]
+    if errors:
+        print("Validation errors — fix before adding:", file=sys.stderr)
+        for rid, errs in errors:
+            for e in errs:
+                print(f"  [{rid}] {e}", file=sys.stderr)
+        sys.exit(1)
+    RULES_LOCAL.mkdir(parents=True, exist_ok=True)
+    dest = RULES_LOCAL / src_file.name
+    dest.write_text(src_file.read_text())
+    print(f"Added to rules/local/{src_file.name}")
+
+
+def cmd_validate(args):
+    path = Path(args.yaml_file)
+    if not path.exists():
+        print(f"File not found: {path}", file=sys.stderr)
+        sys.exit(1)
+    issues = validate_rule_file(path)
+    if not issues:
+        print(f"✓ {path.name} — no issues found")
+        return
+    has_error = False
+    for rid, errs in issues:
+        for e in errs:
+            prefix = "  ERROR" if ("Missing" in e or "Invalid" in e or "parse" in e) else "  WARN "
+            if "ERROR" in prefix:
+                has_error = True
+            print(f"[{rid}] {prefix}: {e}")
+    if has_error:
+        sys.exit(1)
+    else:
+        print("Validation passed with warnings.")
+
+
+def cmd_stats(args):
+    all_rules = load_all_rules()
+    from collections import defaultdict
+
+    by_sev = defaultdict(int)
+    by_cat = defaultdict(int)
+    by_src = defaultdict(int)
+    enabled_count = 0
+    disabled_count = 0
+
+    for r in all_rules:
+        by_sev[r.get("severity", "?")]    += 1
+        by_cat[r.get("category", "?")]    += 1
+        by_src[r.get("source", "?")]      += 1
+        if r.get("enabled", True):
+            enabled_count += 1
+        else:
+            disabled_count += 1
+
+    print(f"\n{BOLD}Rule Statistics{RESET}")
+    print(f"  Total rules:   {len(all_rules)}")
+    print(f"  Enabled:       {enabled_count}")
+    print(f"  Disabled:      {disabled_count}")
+
+    print(f"\n{BOLD}By Severity:{RESET}")
+    for sev in ["critical", "high", "medium", "low", "info"]:
+        c = by_sev.get(sev, 0)
+        if c:
+            color = SEV_COLOR.get(sev, "")
+            print(f"  {color}{sev:<12}{RESET}  {c}")
+
+    print(f"\n{BOLD}By Category:{RESET}")
+    for cat, cnt in sorted(by_cat.items(), key=lambda x: -x[1]):
+        print(f"  {cat:<28}  {cnt}")
+
+    print(f"\n{BOLD}By Source:{RESET}")
+    for src, cnt in sorted(by_src.items(), key=lambda x: -x[1]):
+        print(f"  {src:<20}  {cnt}")
+
+
+def cmd_diff(args):
+    """Show rules that were added/changed in the last community sync."""
+    # Simple: show files in rules/community/ sorted by mtime, newest first
+    if not RULES_COMMUNITY.exists():
+        print("No community rules directory.")
+        return
+    files = sorted(RULES_COMMUNITY.glob("*.yaml"), key=lambda f: f.stat().st_mtime, reverse=True)
+    if not files:
+        print("No community rule files. Run: codesec-rules sync")
+        return
+    print("Community rule files (newest first):")
+    for f in files[:10]:
+        import time
+        mtime = time.strftime("%Y-%m-%d %H:%M", time.localtime(f.stat().st_mtime))
+        data = yaml_loads(f.read_text(errors="ignore")) or {}
+        count = len(data.get("rules") or [])
+        print(f"  {mtime}  {f.name}  ({count} rules)")
+
+
+def cmd_test(args):
+    """Run a rule against a file or directory and show matches."""
+    all_rules = load_all_rules()
+    rule = next((r for r in all_rules if r.get("id") == args.rule_id), None)
+    if not rule:
+        print(f"Rule '{args.rule_id}' not found.", file=sys.stderr)
+        sys.exit(1)
+
+    target = Path(args.on)
+    if not target.exists():
+        print(f"Path not found: {target}", file=sys.stderr)
+        sys.exit(1)
+
+    flags = 0
+    for flag_name in (rule.get("pattern_flags") or []):
+        flags |= getattr(re, flag_name, 0)
+    try:
+        compiled = re.compile(rule["pattern"], flags)
+    except re.error as e:
+        print(f"Pattern compile error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    files = [target] if target.is_file() else list(target.rglob("*"))
+    matches = []
+
+    for fpath in files:
+        if not fpath.is_file():
+            continue
+        exts = rule.get("extensions") or []
+        fname_pat = rule.get("filename_pattern")
+        if exts and fpath.suffix.lower() not in exts:
+            if not (fname_pat and re.search(fname_pat, fpath.name)):
+                continue
+        try:
+            content = fpath.read_text(errors="ignore")
+            for lineno, line in enumerate(content.splitlines(), 1):
+                if compiled.search(line):
+                    matches.append((str(fpath), lineno, line.strip()[:120]))
+        except Exception:
+            pass
+
+    if not matches:
+        print(f"✓ No matches for rule '{args.rule_id}' in {target}")
+        return
+
+    print(f"\nRule '{args.rule_id}' — {len(matches)} match(es) in {target}:\n")
+    for fpath, lineno, snippet in matches[:50]:
+        print(f"  {fpath}:{lineno}")
+        print(f"    {CYAN}{snippet}{RESET}")
+    if len(matches) > 50:
+        print(f"  ... and {len(matches) - 50} more")
+
+
+# ─── Main ──────────────────────────────────────────────────────────────────────
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="codesec-rules",
+        description="Rule management CLI for Code Security Guardian"
+    )
+    sub = parser.add_subparsers(dest="command")
+
+    p_list = sub.add_parser("list", help="List rules")
+    p_list.add_argument("--category", help="Filter by category")
+    p_list.add_argument("--severity", help="Filter by severity")
+    p_list.add_argument("--source", help="Filter by source (core|community|local)")
+
+    p_show = sub.add_parser("show", help="Show rule details")
+    p_show.add_argument("rule_id")
+
+    p_disable = sub.add_parser("disable", help="Disable a rule (writes to rules/local/)")
+    p_disable.add_argument("rule_id")
+
+    p_enable = sub.add_parser("enable", help="Enable a rule")
+    p_enable.add_argument("rule_id")
+
+    p_add = sub.add_parser("add", help="Add a rule file to rules/local/")
+    p_add.add_argument("yaml_file")
+
+    sub.add_parser("sync", help="Pull community rules from configured URL")
+    sub.add_parser("diff", help="Show recently synced community rule files")
+
+    p_validate = sub.add_parser("validate", help="Validate a YAML rule file")
+    p_validate.add_argument("yaml_file")
+
+    sub.add_parser("stats", help="Show rule counts by category/severity/source")
+
+    p_test = sub.add_parser("test", help="Test a rule against a file or directory")
+    p_test.add_argument("rule_id")
+    p_test.add_argument("--on", required=True, metavar="PATH", help="File or directory to test against")
+
+    args = parser.parse_args()
+
+    commands = {
+        "list":     cmd_list,
+        "show":     cmd_show,
+        "disable":  cmd_disable,
+        "enable":   cmd_enable,
+        "add":      cmd_add,
+        "sync":     cmd_sync,
+        "diff":     cmd_diff,
+        "validate": cmd_validate,
+        "stats":    cmd_stats,
+        "test":     cmd_test,
+    }
+
+    if args.command not in commands:
+        parser.print_help()
+        sys.exit(1)
+
+    commands[args.command](args)
+
+
+if __name__ == "__main__":
+    main()

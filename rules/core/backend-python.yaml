@@ -1,0 +1,225 @@
+rules:
+  - id: BACKEND_PYTHON_EVAL
+    severity: critical
+    category: code-injection
+    cwe: CWE-95
+    languages: [python]
+    extensions: [.py]
+    pattern: '\beval\s*\('
+    pattern_type: regex
+    pattern_flags: []
+    message: "eval() can execute arbitrary code."
+    fix_hint: "Remove eval(). Use ast.literal_eval() for safe expression evaluation."
+    confidence: medium
+    false_positive_hints:
+      - "eval( in test/fixture files"
+    references: []
+    enabled: true
+    source: core
+    added: 2025-01-15
+
+  - id: BACKEND_PYTHON_EXEC
+    severity: critical
+    category: code-injection
+    cwe: CWE-95
+    languages: [python]
+    extensions: [.py]
+    pattern: '\bexec\s*\('
+    pattern_type: regex
+    pattern_flags: []
+    message: "exec() can execute arbitrary code."
+    fix_hint: "Remove exec() with user input."
+    confidence: medium
+    false_positive_hints: []
+    references: []
+    enabled: true
+    source: core
+    added: 2025-01-15
+
+  - id: BACKEND_PYTHON_OS_SYSTEM
+    severity: critical
+    category: command-injection
+    cwe: CWE-78
+    languages: [python]
+    extensions: [.py]
+    pattern: '\bos\.system\s*\('
+    pattern_type: regex
+    pattern_flags: []
+    message: "os.system() may be vulnerable to command injection."
+    fix_hint: "Use subprocess.run(['cmd', arg], shell=False) with a list of arguments."
+    confidence: medium
+    false_positive_hints:
+      - "Fully hardcoded string argument with no user data"
+    references:
+      - https://cheatsheetseries.owasp.org/cheatsheets/OS_Command_Injection_Defense_Cheat_Sheet.html
+    enabled: true
+    source: core
+    added: 2025-01-15
+
+  - id: BACKEND_PYTHON_SUBPROCESS_SHELL
+    severity: critical
+    category: command-injection
+    cwe: CWE-78
+    languages: [python]
+    extensions: [.py]
+    pattern: 'subprocess\.\w+\([^)]*shell\s*=\s*True'
+    pattern_type: regex
+    pattern_flags: []
+    message: "subprocess with shell=True is vulnerable to command injection."
+    fix_hint: "Use shell=False with a list of arguments: subprocess.run(['cmd', arg], shell=False)"
+    confidence: high
+    false_positive_hints: []
+    references: []
+    enabled: true
+    source: core
+    added: 2025-01-15
+
+  - id: BACKEND_PYTHON_PICKLE
+    severity: critical
+    category: unsafe-deserialization
+    cwe: CWE-502
+    languages: [python]
+    extensions: [.py]
+    pattern: '\bpickle\.loads?\s*\('
+    pattern_type: regex
+    pattern_flags: []
+    message: "pickle.load(s) with untrusted data allows arbitrary code execution."
+    fix_hint: "Use JSON or another safe serialization format. Never unpickle untrusted data."
+    confidence: high
+    false_positive_hints: []
+    references:
+      - https://docs.python.org/3/library/pickle.html#pickle-inst
+    enabled: true
+    source: core
+    added: 2025-01-15
+
+  - id: BACKEND_PYTHON_YAML_UNSAFE
+    severity: critical
+    category: unsafe-deserialization
+    cwe: CWE-502
+    languages: [python]
+    extensions: [.py]
+    pattern: 'yaml\.load\s*\((?!.*Loader)'
+    pattern_type: regex
+    pattern_flags: []
+    message: "yaml.load() without explicit SafeLoader allows code execution."
+    fix_hint: "Use yaml.safe_load() or yaml.load(data, Loader=yaml.SafeLoader)"
+    confidence: high
+    false_positive_hints: []
+    references:
+      - https://pyyaml.org/wiki/PyYAMLDocumentation
+    enabled: true
+    source: core
+    added: 2025-01-15
+
+  - id: BACKEND_PYTHON_SQLI_FSTRING
+    severity: critical
+    category: sql-injection
+    cwe: CWE-89
+    languages: [python]
+    extensions: [.py]
+    pattern: '\.execute\s*\(\s*f["'']'
+    pattern_type: regex
+    pattern_flags: []
+    message: "SQL query built with f-string — SQL injection risk."
+    fix_hint: "Use parameterized queries. Never interpolate variables into SQL."
+    confidence: high
+    false_positive_hints: []
+    references:
+      - https://cheatsheetseries.owasp.org/cheatsheets/SQL_Injection_Prevention_Cheat_Sheet.html
+    enabled: true
+    source: core
+    added: 2025-01-15
+
+  - id: BACKEND_PYTHON_SQLI_FORMAT_METHOD
+    severity: critical
+    category: sql-injection
+    cwe: CWE-89
+    languages: [python]
+    extensions: [.py]
+    pattern: '\.execute\s*\(.*\.format\s*\('
+    pattern_type: regex
+    pattern_flags: [IGNORECASE]
+    message: "SQL query built with .format() — SQL injection risk."
+    fix_hint: "Use parameterized queries instead of string formatting."
+    confidence: high
+    false_positive_hints: []
+    references: []
+    enabled: true
+    source: core
+    added: 2025-01-15
+
+  - id: BACKEND_PYTHON_REQUESTS_NO_VERIFY
+    severity: high
+    category: tls
+    cwe: CWE-295
+    languages: [python]
+    extensions: [.py]
+    pattern: 'requests\.\w+\([^)]*verify\s*=\s*False'
+    pattern_type: regex
+    pattern_flags: []
+    message: "requests with verify=False disables TLS certificate validation."
+    fix_hint: "Remove verify=False. If using a private CA, pass verify='/path/to/ca-bundle.crt'"
+    confidence: high
+    false_positive_hints: []
+    references: []
+    enabled: true
+    source: core
+    added: 2025-01-15
+
+  - id: BACKEND_PYTHON_WEAK_HASH_PASSWORD
+    severity: critical
+    category: weak-crypto
+    cwe: CWE-916
+    languages: [python]
+    extensions: [.py]
+    pattern: 'hashlib\.(md5|sha1)\s*\([^)]*(?:password|passwd|pwd)'
+    pattern_type: regex
+    pattern_flags: [IGNORECASE]
+    message: "MD5/SHA1 used for password hashing — these are too fast for password storage."
+    fix_hint: "Use bcrypt or argon2: pip install argon2-cffi; from argon2 import PasswordHasher"
+    confidence: high
+    false_positive_hints: []
+    references:
+      - https://cheatsheetseries.owasp.org/cheatsheets/Password_Storage_Cheat_Sheet.html
+    enabled: true
+    source: core
+    added: 2025-01-15
+
+  - id: BACKEND_PYTHON_FLASK_DEBUG
+    severity: high
+    category: debug-mode
+    cwe: CWE-94
+    languages: [python]
+    extensions: [.py]
+    pattern: 'app\.run\s*\([^)]*debug\s*=\s*True'
+    pattern_type: regex
+    pattern_flags: []
+    message: "Flask debug mode enabled — exposes interactive debugger to users."
+    fix_hint: "Use DEBUG = os.environ.get('DEBUG', 'False') == 'True'"
+    confidence: high
+    false_positive_hints:
+      - "In test files or local-only scripts"
+    references: []
+    enabled: true
+    source: core
+    added: 2025-01-15
+
+  - id: BACKEND_PYTHON_DJANGO_DEBUG
+    severity: high
+    category: debug-mode
+    cwe: CWE-94
+    languages: [python]
+    extensions: [.py]
+    pattern: '^\s*DEBUG\s*=\s*True'
+    pattern_type: regex
+    pattern_flags: [MULTILINE]
+    message: "Django DEBUG=True found — exposes stack traces and SQL queries to users."
+    fix_hint: "Use DEBUG = os.environ.get('DEBUG', 'False') == 'True'"
+    confidence: medium
+    false_positive_hints:
+      - "In test_settings.py or local_settings.py"
+    references: []
+    enabled: true
+    source: core
+    added: 2025-01-15

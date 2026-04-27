@@ -1,0 +1,56 @@
+rules:
+  - id: BACKEND_JAVA_CMDI
+    severity: critical
+    category: command-injection
+    cwe: CWE-78
+    languages: [java]
+    extensions: [.java]
+    pattern: 'Runtime\.getRuntime\s*\(\s*\)\.exec\s*\([^)]*\+'
+    pattern_type: regex
+    pattern_flags: []
+    message: "Runtime.exec() with string concatenation — command injection risk."
+    fix_hint: "Use ProcessBuilder with a String[] argument list."
+    confidence: high
+    false_positive_hints: []
+    references: []
+    enabled: true
+    source: core
+    added: 2025-01-15
+
+  - id: BACKEND_JAVA_SQLI
+    severity: critical
+    category: sql-injection
+    cwe: CWE-89
+    languages: [java]
+    extensions: [.java]
+    pattern: 'executeQuery\s*\([^)]*\+'
+    pattern_type: regex
+    pattern_flags: []
+    message: "SQL query built with string concatenation — SQL injection risk."
+    fix_hint: "Use PreparedStatement with parameter placeholders."
+    confidence: high
+    false_positive_hints: []
+    references: []
+    enabled: true
+    source: core
+    added: 2025-01-15
+
+  - id: BACKEND_JAVA_OBJECT_INPUT_STREAM
+    severity: critical
+    category: unsafe-deserialization
+    cwe: CWE-502
+    languages: [java]
+    extensions: [.java]
+    pattern: '\bnew\s+ObjectInputStream\s*\('
+    pattern_type: regex
+    pattern_flags: []
+    message: "ObjectInputStream with untrusted data allows arbitrary code execution."
+    fix_hint: "Use JSON (Jackson) or protobuf. Implement a serialization filter if ObjectInputStream is required."
+    confidence: medium
+    false_positive_hints:
+      - "Reading from a trusted local file"
+    references:
+      - https://owasp.org/www-community/vulnerabilities/Deserialization_of_untrusted_data
+    enabled: true
+    source: core
+    added: 2025-01-15

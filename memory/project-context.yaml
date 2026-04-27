@@ -1,0 +1,20 @@
+# Auto-managed by codesec-scan. Do not edit manually.
+# Updated on first scan and whenever the plugin learns about your project.
+
+project_id: ""
+detected_stacks: []
+languages: []
+conventions:
+  test_paths:
+    - tests/
+    - __tests__/
+    - spec/
+    - test/
+  ignored_paths: []
+  trusted_secret_prefixes:
+    - pk_live_
+    - pk_test_
+    - NEXT_PUBLIC_
+last_scan: null
+last_research: null
+scan_count: 0

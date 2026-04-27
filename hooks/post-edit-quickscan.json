@@ -1,0 +1,15 @@
+{
+  "description": "Quick security scan on files edited by Claude Code. Surfaces only Critical and High findings inline. Opt-in — see README for activation instructions.",
+  "event": "PostToolUse",
+  "matcher": "Edit|Write|MultiEdit",
+  "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/bin/codesec-scan\" --path \"${TOOL_RESULT_FILE_PATH}\" --quick --json --severity high 2>/dev/null | python3 -c \"\nimport json, sys\ntry:\n    findings = json.load(sys.stdin)\nexcept Exception:\n    sys.exit(0)\nif not findings:\n    sys.exit(0)\ncrits = [f for f in findings if f.get('severity') in ('critical', 'high')]\nif not crits:\n    sys.exit(0)\nprint('\\n\\u26a0\\ufe0f  Security findings in edited file:')\nfor f in crits:\n    sev = f.get('severity','?').upper()\n    rule = f.get('rule_id','?')\n    line = f.get('line','?')\n    msg = f.get('message','?')\n    print(f'  [{sev}] Line {line} ({rule}): {msg}')\nprint('Run /code-security-guardian:security-scan to see full report and fixes.')\n\"",
+  "enabled": false,
+  "notes": [
+    "This hook is DISABLED by default. To enable it, set 'enabled': true in this file,",
+    "or add it to your Claude Code settings under hooks.",
+    "The hook runs codesec-scan in --quick mode on the specific edited file only.",
+    "It only prints output if Critical or High findings are detected — silent on clean files.",
+    "Target scan time: under 2 seconds per file.",
+    "The TOOL_RESULT_FILE_PATH variable is set by Claude Code to the path of the edited file."
+  ]
+}

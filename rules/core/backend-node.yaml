@@ -1,0 +1,94 @@
+rules:
+  - id: BACKEND_NODE_EXEC
+    severity: critical
+    category: command-injection
+    cwe: CWE-78
+    languages: [js, ts, mjs, cjs]
+    extensions: [.js, .ts, .mjs, .cjs]
+    pattern: 'child_process\.exec\s*\('
+    pattern_type: regex
+    pattern_flags: []
+    message: "child_process.exec() passes command to a shell — command injection risk."
+    fix_hint: "Use execFile() or spawn() with argument arrays instead."
+    confidence: medium
+    false_positive_hints:
+      - "Called with a fully hardcoded string and no user input"
+    references:
+      - https://nodejs.org/api/child_process.html#child_processexecfilefile-args-options-callback
+    enabled: true
+    source: core
+    added: 2025-01-15
+
+  - id: BACKEND_NODE_EXEC_SYNC_TEMPLATE
+    severity: critical
+    category: command-injection
+    cwe: CWE-78
+    languages: [js, ts, mjs, cjs]
+    extensions: [.js, .ts, .mjs, .cjs]
+    pattern: 'execSync\s*\(`[^`]*\$\{'
+    pattern_type: regex
+    pattern_flags: []
+    message: "execSync with template literal may allow command injection."
+    fix_hint: "Use execFileSync with an argument array."
+    confidence: high
+    false_positive_hints: []
+    references: []
+    enabled: true
+    source: core
+    added: 2025-01-15
+
+  - id: BACKEND_NODE_SQLI_TEMPLATE
+    severity: critical
+    category: sql-injection
+    cwe: CWE-89
+    languages: [js, ts, mjs, cjs]
+    extensions: [.js, .ts, .mjs, .cjs]
+    pattern: '`\s*(?:SELECT|INSERT|UPDATE|DELETE|WHERE)[^`]*\$\{'
+    pattern_type: regex
+    pattern_flags: [IGNORECASE]
+    message: "SQL query built with template literal — SQL injection risk."
+    fix_hint: "Use parameterized queries: db.query('SELECT * FROM t WHERE id = $1', [id])"
+    confidence: high
+    false_positive_hints: []
+    references: []
+    enabled: true
+    source: core
+    added: 2025-01-15
+
+  - id: BACKEND_NODE_CORS_WILDCARD
+    severity: medium
+    category: cors
+    cwe: CWE-942
+    languages: [js, ts, mjs]
+    extensions: [.js, .ts, .mjs]
+    pattern: 'app\.use\s*\(\s*cors\s*\(\s*\)\s*\)'
+    pattern_type: regex
+    pattern_flags: []
+    message: "cors() with no options defaults to Access-Control-Allow-Origin: *"
+    fix_hint: "Specify allowed origins: app.use(cors({ origin: ['https://example.com'] }))"
+    confidence: high
+    false_positive_hints: []
+    references:
+      - https://expressjs.com/en/resources/middleware/cors.html
+    enabled: true
+    source: core
+    added: 2025-01-15
+
+  - id: BACKEND_NODE_JWT_NONE_ALG
+    severity: critical
+    category: authentication
+    cwe: CWE-347
+    languages: [js, ts]
+    extensions: [.js, .ts]
+    pattern: "jwt\\.verify\\s*\\([^)]*algorithms\\s*:\\s*\\[[^\\]]*['\"]none['\"]"
+    pattern_type: regex
+    pattern_flags: [IGNORECASE]
+    message: "JWT verification accepts 'none' algorithm — tokens can be forged."
+    fix_hint: "Remove 'none' from algorithms list. Always specify: { algorithms: ['HS256'] }"
+    confidence: high
+    false_positive_hints: []
+    references:
+      - https://auth0.com/blog/critical-vulnerabilities-in-json-web-token-libraries/
+    enabled: true
+    source: core
+    added: 2025-01-15

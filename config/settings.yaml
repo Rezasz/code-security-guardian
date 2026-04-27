@@ -1,0 +1,44 @@
+# Code Security Guardian — User Configuration
+# Edit this file to customize plugin behavior.
+
+research:
+  enabled: true
+  # Auto-detect from project context if empty. Example: [react, python, postgres]
+  focus: []
+  community_rules_url: "https://raw.githubusercontent.com/kanz-ai/codesec-rules/main/manifest.json"
+  gpg_verify: false
+  fetch_timeout_seconds: 30
+  max_items_per_source: 50
+
+learning:
+  enabled: true
+  feedback_log_max_entries: 10000
+  # Set to true to auto-apply high-confidence suppression patterns without prompting.
+  # Recommended: keep false and review proposals manually.
+  auto_apply_high_confidence_suppressions: false
+  min_occurrences_for_proposal: 5
+  dismiss_rate_threshold_for_narrowing: 0.7
+
+privacy:
+  hash_file_paths: true
+  hash_snippets: true
+  log_project_id: true   # hashed git remote URL — no readable path stored
+  share_anonymized_feedback: false  # opt-in only; use `codesec-learn export` to review first
+
+scanner:
+  load_community_rules: true
+  load_local_rules: true
+  respect_inline_ignores: true
+  default_excludes:
+    - node_modules
+    - .git
+    - dist
+    - build
+    - vendor
+    - .venv
+    - venv
+    - __pycache__
+    - .next
+    - .nuxt
+    - coverage
+    - .nyc_output

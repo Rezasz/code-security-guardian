@@ -1,0 +1,72 @@
+rules:
+  - id: BACKEND_RUBY_EVAL
+    severity: critical
+    category: code-injection
+    cwe: CWE-95
+    languages: [ruby]
+    extensions: [.rb]
+    pattern: '\beval\s*\('
+    pattern_type: regex
+    pattern_flags: []
+    message: "eval() with user input allows arbitrary code execution."
+    fix_hint: "Remove eval(). Use safe parsing alternatives."
+    confidence: medium
+    false_positive_hints: []
+    references: []
+    enabled: true
+    source: core
+    added: 2025-01-15
+
+  - id: BACKEND_RUBY_SYSTEM_INTERP
+    severity: critical
+    category: command-injection
+    cwe: CWE-78
+    languages: [ruby]
+    extensions: [.rb]
+    pattern: 'system\s*\([^)]*#\{'
+    pattern_type: regex
+    pattern_flags: []
+    message: "system() with Ruby string interpolation — command injection risk."
+    fix_hint: "Pass arguments as an array: system('convert', input_file, output_file)"
+    confidence: high
+    false_positive_hints: []
+    references: []
+    enabled: true
+    source: core
+    added: 2025-01-15
+
+  - id: BACKEND_RUBY_BACKTICK_INTERP
+    severity: critical
+    category: command-injection
+    cwe: CWE-78
+    languages: [ruby]
+    extensions: [.rb]
+    pattern: '`[^`]*#\{'
+    pattern_type: regex
+    pattern_flags: []
+    message: "Backtick execution with string interpolation — command injection risk."
+    fix_hint: "Use Open3.capture2 with array arguments."
+    confidence: high
+    false_positive_hints: []
+    references: []
+    enabled: true
+    source: core
+    added: 2025-01-15
+
+  - id: BACKEND_RUBY_MARSHAL
+    severity: critical
+    category: unsafe-deserialization
+    cwe: CWE-502
+    languages: [ruby]
+    extensions: [.rb]
+    pattern: '\bMarshal\.load\s*\('
+    pattern_type: regex
+    pattern_flags: []
+    message: "Marshal.load with untrusted data allows arbitrary code execution."
+    fix_hint: "Use JSON.parse instead."
+    confidence: high
+    false_positive_hints: []
+    references: []
+    enabled: true
+    source: core
+    added: 2025-01-15

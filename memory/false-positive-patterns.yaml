@@ -1,0 +1,4 @@
+# False positive suppression patterns — auto-managed by codesec-learn.
+# Each entry suppresses a specific rule in a specific file (or globally).
+
+patterns: []

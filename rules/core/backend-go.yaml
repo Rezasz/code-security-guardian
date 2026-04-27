@@ -1,0 +1,56 @@
+rules:
+  - id: BACKEND_GO_SQLI_SPRINTF
+    severity: critical
+    category: sql-injection
+    cwe: CWE-89
+    languages: [go]
+    extensions: [.go]
+    pattern: 'fmt\.Sprintf\s*\(\s*"[^"]*(?:SELECT|INSERT|UPDATE|DELETE|WHERE)'
+    pattern_type: regex
+    pattern_flags: [IGNORECASE]
+    message: "SQL query built with fmt.Sprintf — SQL injection risk."
+    fix_hint: "Use db.QueryContext with parameter placeholders ($1, ?, etc.)"
+    confidence: high
+    false_positive_hints: []
+    references: []
+    enabled: true
+    source: core
+    added: 2025-01-15
+
+  - id: BACKEND_GO_CMDI_CONCAT
+    severity: critical
+    category: command-injection
+    cwe: CWE-78
+    languages: [go]
+    extensions: [.go]
+    pattern: 'exec\.Command\s*\([^)]*\+'
+    pattern_type: regex
+    pattern_flags: []
+    message: "exec.Command with string concatenation may allow command injection."
+    fix_hint: "Pass each argument separately: exec.Command('convert', inputFile, outputFile)"
+    confidence: medium
+    false_positive_hints:
+      - "Concatenation of hardcoded strings only"
+    references: []
+    enabled: true
+    source: core
+    added: 2025-01-15
+
+  - id: BACKEND_GO_TLS_INSECURE
+    severity: high
+    category: tls
+    cwe: CWE-295
+    languages: [go]
+    extensions: [.go]
+    pattern: 'InsecureSkipVerify\s*:\s*true'
+    pattern_type: regex
+    pattern_flags: []
+    message: "TLS certificate verification disabled — MITM attacks possible."
+    fix_hint: "Remove InsecureSkipVerify or use a proper CA bundle."
+    confidence: high
+    false_positive_hints:
+      - "In test files only"
+    references: []
+    enabled: true
+    source: core
+    added: 2025-01-15
