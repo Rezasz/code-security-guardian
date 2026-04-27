@@ -144,7 +144,7 @@ Fetches new advisories for your detected stack and drafts new scanner rules. To 
 
 ### 6 — Optional: inline hook
 
-To get security warnings on every file Claude edits, set `"enabled": true` in `hooks/post-edit-quickscan.json`. It runs silently on clean files and only prints Critical/High findings inline.
+To get security warnings on every file Claude edits, add the post-edit hook to your Claude Code `settings.json`. See the **Enabling the post-edit hook** section under Configuration for the exact snippet. It runs silently on clean files and only prints Critical/High findings inline.
 
 ---
 
@@ -399,9 +399,27 @@ scanner:
 
 ### Enabling the post-edit hook
 
-The `hooks/post-edit-quickscan.json` hook runs a quick scan on every file Claude edits and surfaces Critical/High findings inline. Disabled by default (fast, silent on clean files).
+The plugin includes an optional hook that runs a quick scan on every file Claude edits and surfaces Critical/High findings inline. It is silent on clean files and targets under 2 seconds per file.
 
-To enable: set `"enabled": true` in `hooks/post-edit-quickscan.json`.
+To enable, add the following to your Claude Code `settings.json` (find it via **Claude Code → Settings → Edit Config**):
+
+```json
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/bin/codesec-scan\" --path \"${TOOL_RESULT_FILE_PATH}\" --quick --json --severity high 2>/dev/null | python3 -c \"\nimport json, sys\ntry:\n    findings = json.load(sys.stdin)\nexcept Exception:\n    sys.exit(0)\nif not findings:\n    sys.exit(0)\ncrits = [f for f in findings if f.get('severity') in ('critical', 'high')]\nif not crits:\n    sys.exit(0)\nprint('\\n⚠️  Security findings in edited file:')\nfor f in crits:\n    sev = f.get('severity','?').upper()\n    rule = f.get('rule_id','?')\n    line = f.get('line','?')\n    msg = f.get('message','?')\n    print(f'  [{sev}] Line {line} ({rule}): {msg}')\nprint('Run /code-security-guardian:security-scan to see full report and fixes.')\n\""
+          }
+        ]
+      }
+    ]
+  }
+}
+```
 
 ---
 

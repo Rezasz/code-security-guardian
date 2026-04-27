@@ -19,31 +19,20 @@
     "vibe-coding"
   ],
   "skills": [
-    "skills/security-scan/SKILL.md",
-    "skills/security-research/SKILL.md",
-    "skills/security-learn/SKILL.md"
+    "./skills/security-scan/",
+    "./skills/security-research/",
+    "./skills/security-learn/"
   ],
   "agents": [
-    "agents/security-reviewer.md",
-    "agents/security-researcher.md",
-    "agents/rule-author.md"
+    "./agents/security-reviewer.md",
+    "./agents/security-researcher.md",
+    "./agents/rule-author.md"
   ],
   "commands": [
-    "commands/security-scan.md",
-    "commands/security-review-pr.md",
-    "commands/security-research.md",
-    "commands/security-learn.md",
-    "commands/security-rules-review.md"
-  ],
-  "hooks": [
-    "hooks/post-edit-quickscan.json"
-  ],
-  "bin": {
-    "codesec-scan": "bin/codesec-scan",
-    "codesec-rules": "bin/codesec-rules",
-    "codesec-learn": "bin/codesec-learn"
-  },
-  "engines": {
-    "claude-code": ">=1.0.0"
-  }
+    "./commands/security-scan.md",
+    "./commands/security-review-pr.md",
+    "./commands/security-research.md",
+    "./commands/security-learn.md",
+    "./commands/security-rules-review.md"
+  ]
 }
